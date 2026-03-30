@@ -1,0 +1,310 @@
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import Database from "better-sqlite3";
+import { mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const BASE_DIR = join(homedir(), ".pi", "pi-agent-talk");
+
+interface MessageRow {
+  message_id: number;
+  from_agent: string;
+  to_agent: string | null;
+  channel: string;
+  type: string;
+  payload: string;
+  created_at: number;
+  updated_at: number | null;
+}
+
+function getDbPath(channelName: string): string {
+  return join(BASE_DIR, `${channelName}.db`);
+}
+
+function initSchema(db: Database.Database): void {
+  db.pragma("journal_mode = WAL");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agents (
+      session_id TEXT PRIMARY KEY,
+      agent_name TEXT,
+      cwd TEXT,
+      status TEXT DEFAULT 'active' CHECK (status IN ('active', 'idle', 'deactive')),
+      last_heartbeat INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_agent TEXT NOT NULL,
+      to_agent TEXT,
+      channel TEXT NOT NULL,
+      type TEXT NOT NULL CHECK (type IN ('prompt', 'pause', 'continue', 'close')),
+      payload TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_cursors (
+      session_id TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      last_read_id INTEGER DEFAULT 0,
+      PRIMARY KEY (session_id, channel)
+    );
+  `);
+}
+
+export default function (pi: ExtensionAPI) {
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let activeDb: Database.Database | null = null;
+  let activeChannel: string | null = null;
+  let activeSessionId: string | null = null;
+  let activeAgentName: string | null = null;
+  let activeDbFileName: string | null = null;
+
+  // -------------------------------------------------------------------
+  // /agent-talk-build <channelName>
+  // -------------------------------------------------------------------
+  pi.registerCommand("agent-talk-build", {
+    description: "Create a new agent-talk SQLite channel DB. Usage: /agent-talk-build [channelName]",
+    handler: async (args, ctx) => {
+      const channelName = args.trim() || ctx.sessionManager.sessionId;
+
+      mkdirSync(BASE_DIR, { recursive: true });
+
+      const dbPath = getDbPath(channelName);
+      if (existsSync(dbPath)) {
+        ctx.ui.notify(`Error: "${channelName}.db" already exists at ${dbPath}`, "error");
+        return;
+      }
+
+      const db = new Database(dbPath);
+      try {
+        initSchema(db);
+      } finally {
+        db.close();
+      }
+
+      ctx.ui.notify(`Created channel DB: ${dbPath}`, "success");
+    },
+  });
+
+  // -------------------------------------------------------------------
+  // /agent-talk-register channelName [agentName]
+  // -------------------------------------------------------------------
+  pi.registerCommand("agent-talk-register", {
+    description:
+      "Register this agent on a channel and start polling. Usage: /agent-talk-register channelName [agentName]",
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/);
+      const channelName = parts[0];
+      if (!channelName) {
+        ctx.ui.notify("Error: channelName is required. Usage: /agent-talk-register channelName [agentName]", "error");
+        return;
+      }
+
+      const agentName = parts[1] || ctx.sessionManager.sessionId;
+      const sessionId = ctx.sessionManager.sessionId;
+
+      const dbPath = getDbPath(channelName);
+      if (!existsSync(dbPath)) {
+        ctx.ui.notify(`Error: "${channelName}.db" does not exist. Run /agent-talk-build ${channelName} first.`, "error");
+        return;
+      }
+
+      // Clean up any previous registration / polling
+      stopPolling();
+
+      const db = new Database(dbPath);
+      db.pragma("journal_mode = WAL");
+      db.pragma("foreign_keys = OFF");
+
+      // Register agent
+      db.prepare(
+        `INSERT INTO agents (session_id, agent_name, cwd, status, last_heartbeat)
+         VALUES (?, ?, ?, 'active', ?)
+         ON CONFLICT (session_id) DO UPDATE SET
+           agent_name = excluded.agent_name,
+           cwd = excluded.cwd,
+           status = 'active',
+           last_heartbeat = excluded.last_heartbeat`
+      ).run(sessionId, agentName, ctx.cwd, Date.now());
+
+      // Initialize cursor for this channel at 0 (see full history)
+      db.prepare(
+        `INSERT INTO agent_cursors (session_id, channel, last_read_id)
+         VALUES (?, ?, 0)
+         ON CONFLICT (session_id, channel) DO NOTHING`
+      ).run(sessionId, channelName);
+
+      activeDb = db;
+      activeChannel = channelName;
+      activeSessionId = sessionId;
+      activeAgentName = agentName;
+      activeDbFileName = `${channelName}.db`;
+
+      ctx.ui.notify(`Registered as "${agentName}" on channel "${channelName}". Polling started.`, "success");
+
+      // Show initial widget
+      ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] No new message`]);
+
+      // Start polling every 3 seconds
+      startPolling(ctx);
+    },
+  });
+
+  // -------------------------------------------------------------------
+  // /agent-talk-to channelName agentName prompt
+  // -------------------------------------------------------------------
+  pi.registerCommand("agent-talk-to", {
+    description:
+      "Send a message to an agent. Usage: /agent-talk-to channelName agentName prompt...",
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/);
+      if (parts.length < 3) {
+        ctx.ui.notify("Usage: /agent-talk-to channelName agentName prompt...", "error");
+        return;
+      }
+
+      const channelName = parts[0];
+      const agentName = parts[1];
+      const prompt = parts.slice(2).join(" ");
+
+      const dbPath = getDbPath(channelName);
+      if (!existsSync(dbPath)) {
+        ctx.ui.notify(`Error: "${channelName}.db" does not exist.`, "error");
+        return;
+      }
+
+      if (!activeSessionId || !activeAgentName) {
+        ctx.ui.notify("Error: You must register first with /agent-talk-register", "error");
+        return;
+      }
+
+      try {
+        const db = new Database(dbPath);
+        db.pragma("journal_mode = WAL");
+        db.pragma("foreign_keys = OFF");
+
+        // Verify sender is registered
+        const row = db.prepare(
+          `SELECT agent_name FROM agents WHERE session_id = ?`
+        ).get(activeSessionId) as { agent_name: string } | undefined;
+
+        if (!row) {
+          db.close();
+          ctx.ui.notify(`Error: Agent not found for session ${activeSessionId}. Register first.`, "error");
+          return;
+        }
+
+        const now = Date.now();
+        db.prepare(
+          `INSERT INTO messages (from_agent, to_agent, channel, type, payload, created_at, updated_at)
+           VALUES (?, ?, ?, 'prompt', ?, ?, ?)`
+        ).run(row.agent_name, agentName, channelName, JSON.stringify({ content: prompt }), now, now);
+
+        db.close();
+        ctx.ui.notify(`Message sent to ${agentName} on channel "${channelName}"`, "success");
+      } catch (err: any) {
+        ctx.ui.notify(`Error sending message: ${err.message}`, "error");
+      }
+    },
+  });
+
+  // -------------------------------------------------------------------
+  // Polling logic
+  // -------------------------------------------------------------------
+  function startPolling(ctx: ExtensionContext) {
+    pollTimer = setInterval(() => {
+      if (!activeDb || !activeChannel || !activeSessionId) return;
+
+      try {
+        // Fetch unread messages: broadcast (to_agent IS NULL) or direct (to_agent = me)
+        const rows = activeDb
+          .prepare(
+            `SELECT m.* FROM messages m
+             LEFT JOIN agent_cursors ac
+               ON ac.session_id = ? AND ac.channel = m.channel
+             WHERE m.channel = ?
+               AND m.message_id > COALESCE(ac.last_read_id, 0)
+               AND m.from_agent != ?
+               AND (m.to_agent IS NULL OR m.to_agent = ? OR m.to_agent = ?)
+             ORDER BY m.message_id`
+          )
+          .all(activeSessionId, activeChannel, activeSessionId, activeSessionId, activeAgentName) as MessageRow[];
+
+        if (rows.length === 0) {
+          ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] No new message`]);
+          return;
+        }
+
+        // Process each message
+        const widgetLines: string[] = [];
+        let maxId = 0;
+
+        for (const row of rows) {
+          if (row.message_id > maxId) maxId = row.message_id;
+
+          // Emit event so other extensions can listen
+          pi.events.emit("pi_talk_message", {
+            ...row,
+            _dbPath: getDbPath(activeChannel!),
+            _selfSessionId: activeSessionId,
+            _selfAgentName: activeAgentName,
+          });
+
+          widgetLines.push(`[${activeDbFileName}] type=${row.type} payload=${row.payload}`);
+        }
+
+        ctx.ui.setWidget("agent-talk", widgetLines);
+
+        // Advance cursor
+        if (maxId > 0) {
+          activeDb!
+            .prepare(
+              `INSERT INTO agent_cursors (session_id, channel, last_read_id)
+               VALUES (?, ?, ?)
+               ON CONFLICT (session_id, channel)
+               DO UPDATE SET last_read_id = excluded.last_read_id`
+            )
+            .run(activeSessionId, activeChannel, maxId);
+        }
+
+        // Update heartbeat
+        activeDb!
+          .prepare(`UPDATE agents SET last_heartbeat = ? WHERE session_id = ?`)
+          .run(Date.now(), activeSessionId);
+      } catch (err: any) {
+        ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] Poll error: ${err.message}`]);
+      }
+    }, 3000);
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    if (activeDb) {
+      try {
+        // Mark agent as deactive before closing
+        if (activeSessionId) {
+          activeDb
+            .prepare(`UPDATE agents SET status = 'deactive' WHERE session_id = ?`)
+            .run(activeSessionId);
+        }
+        activeDb.close();
+      } catch {
+        // DB might already be closed
+      }
+      activeDb = null;
+    }
+    activeChannel = null;
+    activeSessionId = null;
+    activeAgentName = null;
+    activeDbFileName = null;
+  }
+
+  // Clean up on shutdown
+  pi.on("session_shutdown", async () => {
+    stopPolling();
+  });
+}
