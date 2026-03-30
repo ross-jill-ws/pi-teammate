@@ -1,4 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
+import { StringEnum } from "@mariozechner/pi-ai";
 import Database from "better-sqlite3";
 import { mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -66,7 +68,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("agent-talk-build", {
     description: "Create a new agent-talk SQLite channel DB. Usage: /agent-talk-build [channelName]",
     handler: async (args, ctx) => {
-      const channelName = args.trim() || ctx.sessionManager.sessionId;
+      const channelName = args.trim() || ctx.sessionManager.getSessionId();
 
       mkdirSync(BASE_DIR, { recursive: true });
 
@@ -83,7 +85,7 @@ export default function (pi: ExtensionAPI) {
         db.close();
       }
 
-      ctx.ui.notify(`Created channel DB: ${dbPath}`, "success");
+      ctx.ui.notify(`Created channel DB: ${dbPath}`, "info");
     },
   });
 
@@ -101,8 +103,8 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const agentName = parts[1] || ctx.sessionManager.sessionId;
-      const sessionId = ctx.sessionManager.sessionId;
+      const agentName = parts[1] || ctx.sessionManager.getSessionId();
+      const sessionId = ctx.sessionManager.getSessionId();
 
       const dbPath = getDbPath(channelName);
       if (!existsSync(dbPath)) {
@@ -141,7 +143,7 @@ export default function (pi: ExtensionAPI) {
       activeAgentName = agentName;
       activeDbFileName = `${channelName}.db`;
 
-      ctx.ui.notify(`Registered as "${agentName}" on channel "${channelName}". Polling started.`, "success");
+      ctx.ui.notify(`Registered as "${agentName}" on channel "${channelName}". Polling started.`, "info");
 
       // Show initial widget
       ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] No new message`]);
@@ -202,10 +204,89 @@ export default function (pi: ExtensionAPI) {
         ).run(row.agent_name, agentName, channelName, JSON.stringify({ content: prompt }), now, now);
 
         db.close();
-        ctx.ui.notify(`Message sent to ${agentName} on channel "${channelName}"`, "success");
+        ctx.ui.notify(`Message sent to ${agentName} on channel "${channelName}"`, "info");
       } catch (err: any) {
         ctx.ui.notify(`Error sending message: ${err.message}`, "error");
       }
+    },
+  });
+
+  // -------------------------------------------------------------------
+  // Tool: send_agent_message
+  // -------------------------------------------------------------------
+  pi.registerTool({
+    name: "send_agent_message",
+    label: "Send Agent Message",
+    description:
+      "Send a message to another agent via the shared SQLite message bus. " +
+      "Requires prior registration with /agent-talk-register.",
+    parameters: Type.Object({
+      to_agent: Type.String({ description: "Name of the target agent" }),
+      channel: Type.String({ description: "Channel name (matches the DB file name)" }),
+      type: StringEnum(["prompt", "pause", "continue", "close"] as const, {
+        description: "Message type",
+      }),
+      payload: Type.String({
+        description: 'JSON payload, e.g. {"content": "Hello agent!"}',
+      }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      if (!activeSessionId || !activeAgentName) {
+        throw new Error("Not registered. Run /agent-talk-register first.");
+      }
+
+      const dbPath = getDbPath(params.channel);
+      if (!existsSync(dbPath)) {
+        throw new Error(`Channel "${params.channel}" does not exist.`);
+      }
+
+      // Validate payload is valid JSON with content
+      let parsed: any;
+      try {
+        parsed = JSON.parse(params.payload);
+      } catch {
+        throw new Error("payload must be valid JSON");
+      }
+      if (!parsed.content) {
+        throw new Error('payload must contain a "content" field');
+      }
+
+      const db = new Database(dbPath);
+      db.pragma("journal_mode = WAL");
+      db.pragma("foreign_keys = OFF");
+
+      // Look up sender's agent_name
+      const row = db.prepare(
+        `SELECT agent_name FROM agents WHERE session_id = ?`
+      ).get(activeSessionId) as { agent_name: string } | undefined;
+
+      if (!row) {
+        db.close();
+        throw new Error(`Agent not found for session. Register first.`);
+      }
+
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO messages (from_agent, to_agent, channel, type, payload, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(row.agent_name, params.to_agent, params.channel, params.type, params.payload, now, now);
+
+      db.close();
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Message sent to "${params.to_agent}" on channel "${params.channel}" (type: ${params.type})`,
+          },
+        ],
+        details: {
+          to_agent: params.to_agent,
+          channel: params.channel,
+          messageType: params.type,
+        },
+      };
     },
   });
 
@@ -237,7 +318,6 @@ export default function (pi: ExtensionAPI) {
         }
 
         // Process each message
-        const widgetLines: string[] = [];
         let maxId = 0;
 
         for (const row of rows) {
@@ -251,10 +331,9 @@ export default function (pi: ExtensionAPI) {
             _selfAgentName: activeAgentName,
           });
 
-          widgetLines.push(`[${activeDbFileName}] type=${row.type} payload=${row.payload}`);
         }
 
-        ctx.ui.setWidget("agent-talk", widgetLines);
+        ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] last message_id: ${maxId}`]);
 
         // Advance cursor
         if (maxId > 0) {

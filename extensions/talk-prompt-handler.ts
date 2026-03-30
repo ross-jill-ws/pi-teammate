@@ -26,7 +26,8 @@ interface PendingReply {
 export default function (pi: ExtensionAPI) {
   let pendingReply: PendingReply | null = null;
 
-  pi.events.on("pi_talk_message", (row: TalkMessageEvent) => {
+  pi.events.on("pi_talk_message", (data: unknown) => {
+    const row = data as TalkMessageEvent;
     if (row.type !== "prompt") return;
 
     let content: string | undefined;
@@ -102,7 +103,7 @@ export default function (pi: ExtensionAPI) {
       );
 
       db.close();
-      ctx.ui.notify(`Reply sent to ${reply.fromAgent}`, "success");
+      ctx.ui.notify(`Reply sent to ${reply.fromAgent}`, "info");
     } catch (err: any) {
       ctx.ui.notify(`agent-talk-reply DB error: ${err.message}`, "error");
     }
