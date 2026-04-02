@@ -1,8 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { AutocompleteItem } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 import Database from "better-sqlite3";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -54,6 +55,63 @@ function initSchema(db: Database.Database): void {
   `);
 }
 
+function unique(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
+function listChannelNames(): string[] {
+  if (!existsSync(BASE_DIR)) return [];
+
+  return readdirSync(BASE_DIR)
+    .filter((name) => name.endsWith(".db"))
+    .map((name) => name.slice(0, -3))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function listAgentNames(channelName: string): string[] {
+  const dbPath = getDbPath(channelName);
+  if (!existsSync(dbPath)) return [];
+
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT agent_name
+         FROM agents
+         WHERE agent_name IS NOT NULL AND agent_name != ''
+         ORDER BY agent_name`
+      )
+      .all() as Array<{ agent_name: string }>;
+
+    return rows.map((row) => row.agent_name);
+  } finally {
+    db.close();
+  }
+}
+
+function parseCommandArgs(prefix: string): { parts: string[]; hasTrailingSpace: boolean } {
+  return {
+    parts: prefix.trim().length > 0 ? prefix.trim().split(/\s+/) : [],
+    hasTrailingSpace: /\s$/.test(prefix),
+  };
+}
+
+function buildAutocompleteItems(
+  values: string[],
+  partial: string,
+  toValue: (value: string) => string = (value) => value,
+  description?: (value: string) => string,
+): AutocompleteItem[] | null {
+  const filtered = values.filter((value) => value.startsWith(partial));
+  if (filtered.length === 0) return null;
+
+  return filtered.map((value) => ({
+    value: toValue(value),
+    label: value,
+    description: description?.(value),
+  }));
+}
+
 export default function (pi: ExtensionAPI) {
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let activeDb: Database.Database | null = null;
@@ -62,11 +120,55 @@ export default function (pi: ExtensionAPI) {
   let activeAgentName: string | null = null;
   let activeDbFileName: string | null = null;
 
+  async function promptForChannel(ctx: ExtensionContext, title: string): Promise<string | null> {
+    const channels = unique([activeChannel, ...listChannelNames()]);
+
+    if (channels.length > 0) {
+      const selected = await ctx.ui.select(title, channels);
+      if (selected) return selected;
+      return null;
+    }
+
+    const typed = await ctx.ui.input(title, activeChannel ?? ctx.sessionManager.getSessionId());
+    const value = typed?.trim();
+    return value || null;
+  }
+
+  async function promptForAgent(
+    ctx: ExtensionContext,
+    channelName: string,
+    title: string,
+  ): Promise<string | null> {
+    const agents = listAgentNames(channelName).filter((name) => name !== activeAgentName);
+
+    if (agents.length > 0) {
+      const selected = await ctx.ui.select(title, agents);
+      if (selected) return selected;
+      return null;
+    }
+
+    const typed = await ctx.ui.input(title, "agent name");
+    const value = typed?.trim();
+    return value || null;
+  }
+
+  async function promptForMessage(ctx: ExtensionContext, title: string): Promise<string | null> {
+    const typed = await ctx.ui.input(title, "type your message");
+    const value = typed?.trim();
+    return value || null;
+  }
+
   // -------------------------------------------------------------------
   // /agent-talk-build <channelName>
   // -------------------------------------------------------------------
   pi.registerCommand("agent-talk-build", {
-    description: "Create a new agent-talk SQLite channel DB. Usage: /agent-talk-build [channelName]",
+    description:
+      "Create a new agent-talk SQLite channel DB. Usage: /agent-talk-build [channelName] (defaults to current session id)",
+    getArgumentCompletions: (prefix) => {
+      const partial = prefix.trim();
+      const suggestions = unique([activeChannel, activeSessionId]);
+      return buildAutocompleteItems(suggestions, partial, (value) => value, () => "suggested channel name");
+    },
     handler: async (args, ctx) => {
       const channelName = args.trim() || ctx.sessionManager.getSessionId();
 
@@ -94,13 +196,37 @@ export default function (pi: ExtensionAPI) {
   // -------------------------------------------------------------------
   pi.registerCommand("agent-talk-register", {
     description:
-      "Register this agent on a channel and start polling. Usage: /agent-talk-register channelName [agentName]",
+      "Register this agent on a channel and start polling. Usage: /agent-talk-register <channelName> [agentName]",
+    getArgumentCompletions: (prefix) => {
+      const { parts, hasTrailingSpace } = parseCommandArgs(prefix);
+
+      if (parts.length === 0 || (parts.length === 1 && !hasTrailingSpace)) {
+        const partialChannel = parts[0] ?? "";
+        const channels = unique([activeChannel, ...listChannelNames()]);
+        return buildAutocompleteItems(channels, partialChannel, (value) => value, () => "channel");
+      }
+
+      if ((parts.length === 1 && hasTrailingSpace) || (parts.length === 2 && !hasTrailingSpace)) {
+        const channelName = parts[0];
+        const partialAgent = hasTrailingSpace ? "" : (parts[1] ?? "");
+        const agents = unique([activeAgentName, activeSessionId]);
+        return buildAutocompleteItems(
+          agents,
+          partialAgent,
+          (value) => `${channelName} ${value}`,
+          () => `agent name on ${channelName}`,
+        );
+      }
+
+      return null;
+    },
     handler: async (args, ctx) => {
-      const parts = args.trim().split(/\s+/);
-      const channelName = parts[0];
+      const parts = args.trim().split(/\s+/).filter(Boolean);
+      let channelName = parts[0];
+
       if (!channelName) {
-        ctx.ui.notify("Error: channelName is required. Usage: /agent-talk-register channelName [agentName]", "error");
-        return;
+        channelName = await promptForChannel(ctx, "Choose channel to register on");
+        if (!channelName) return;
       }
 
       const agentName = parts[1] || ctx.sessionManager.getSessionId();
@@ -158,17 +284,52 @@ export default function (pi: ExtensionAPI) {
   // -------------------------------------------------------------------
   pi.registerCommand("agent-talk-to", {
     description:
-      "Send a message to an agent. Usage: /agent-talk-to channelName agentName prompt...",
-    handler: async (args, ctx) => {
-      const parts = args.trim().split(/\s+/);
-      if (parts.length < 3) {
-        ctx.ui.notify("Usage: /agent-talk-to channelName agentName prompt...", "error");
-        return;
+      "Send a message to an agent. Usage: /agent-talk-to <channelName> <agentName> <prompt...>",
+    getArgumentCompletions: (prefix) => {
+      const { parts, hasTrailingSpace } = parseCommandArgs(prefix);
+
+      if (parts.length === 0 || (parts.length === 1 && !hasTrailingSpace)) {
+        const partialChannel = parts[0] ?? "";
+        const channels = unique([activeChannel, ...listChannelNames()]);
+        return buildAutocompleteItems(channels, partialChannel, (value) => value, (value) =>
+          value === activeChannel ? "active channel" : "channel",
+        );
       }
 
-      const channelName = parts[0];
-      const agentName = parts[1];
-      const prompt = parts.slice(2).join(" ");
+      if ((parts.length === 1 && hasTrailingSpace) || (parts.length === 2 && !hasTrailingSpace)) {
+        const channelName = parts[0];
+        const partialAgent = hasTrailingSpace ? "" : (parts[1] ?? "");
+        const agents = listAgentNames(channelName).filter((name) => name !== activeAgentName);
+        return buildAutocompleteItems(
+          agents,
+          partialAgent,
+          (value) => `${channelName} ${value}`,
+          () => `agent on ${channelName}`,
+        );
+      }
+
+      return null;
+    },
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/).filter(Boolean);
+
+      let channelName = parts[0] || activeChannel || undefined;
+      if (!channelName) {
+        channelName = await promptForChannel(ctx, "Choose a channel");
+        if (!channelName) return;
+      }
+
+      let agentName = parts[1];
+      if (!agentName) {
+        agentName = await promptForAgent(ctx, channelName, `Choose recipient on \"${channelName}\"`);
+        if (!agentName) return;
+      }
+
+      let prompt = parts.length >= 3 ? parts.slice(2).join(" ") : "";
+      if (!prompt) {
+        prompt = (await promptForMessage(ctx, `Message to ${agentName}:`)) ?? "";
+        if (!prompt) return;
+      }
 
       const dbPath = getDbPath(channelName);
       if (!existsSync(dbPath)) {
@@ -330,7 +491,6 @@ export default function (pi: ExtensionAPI) {
             _selfSessionId: activeSessionId,
             _selfAgentName: activeAgentName,
           });
-
         }
 
         ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] last message_id: ${maxId}`]);
