@@ -23,6 +23,24 @@ interface PendingReply {
   selfAgentName: string;
 }
 
+function extractLatestAssistantReply(messages: unknown[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i] as any;
+    if (msg?.role !== "assistant" || !Array.isArray(msg.content)) continue;
+
+    const text = msg.content
+      .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+      .map((block: any) => block.text.trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+
+    if (text) return text;
+  }
+
+  return "";
+}
+
 export default function (pi: ExtensionAPI) {
   let pendingReply: PendingReply | null = null;
 
@@ -52,29 +70,36 @@ export default function (pi: ExtensionAPI) {
     pi.sendUserMessage(content);
   });
 
+  pi.on("before_agent_start", async (event) => {
+    if (!pendingReply) return;
+
+    return {
+      systemPrompt:
+        `${event.systemPrompt}\n\n` +
+        `You are in a direct chat conversation with another agent named ${pendingReply.fromAgent}. ` +
+        `Your next assistant message will be sent back to them as-is. ` +
+        `Write exactly one natural chat reply. ` +
+        `Requirements: ` +
+        `1) answer their latest message directly, ` +
+        `2) sound like a normal person in conversation, ` +
+        `3) keep it concise unless detail is genuinely needed, ` +
+        `4) if helpful, end with one natural follow-up question to keep the conversation going, ` +
+        `5) do not include analysis, tool chatter, file paths, markdown framing, or labels like "Reply:".`
+    };
+  });
+
   pi.on("agent_end", async (event, ctx) => {
     if (!pendingReply) return;
 
     const reply = pendingReply;
     pendingReply = null;
 
-    // Extract assistant text from the messages produced during this prompt
-    const assistantTexts: string[] = [];
+    // Send only the latest assistant reply, not every assistant message from the run.
     const messages = event.messages ?? [];
 
     ctx.ui.setStatus("agent-talk-reply", `agent_end: ${messages.length} messages`);
 
-    for (const msg of messages) {
-      if ((msg as any).role === "assistant" && Array.isArray((msg as any).content)) {
-        for (const block of (msg as any).content) {
-          if (block.type === "text" && block.text) {
-            assistantTexts.push(block.text);
-          }
-        }
-      }
-    }
-
-    const responseText = assistantTexts.join("\n");
+    const responseText = extractLatestAssistantReply(messages);
     if (!responseText) {
       ctx.ui.notify(
         `agent-talk-reply: No assistant text found in ${messages.length} messages (roles: ${messages.map((m: any) => m.role).join(", ")})`,
