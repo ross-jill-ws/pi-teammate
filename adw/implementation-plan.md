@@ -739,6 +739,8 @@ Both implement `Focusable` interface and close on Escape/Enter/same-shortcut.
 
 #### 7.1 — `extensions/commands.ts`
 
+**Team commands:**
+
 | Command | Description |
 |---------|-------------|
 | `/team-create [name]` | Create a new channel DB |
@@ -746,10 +748,108 @@ Both implement `Focusable` interface and close on Escape/Enter/same-shortcut.
 | `/team-leave` | Broadcast `agent_leave`, stop MAMORU, mark agent inactive |
 | `/team-send <to> <message>` | Send a manual message (debugging/testing) |
 | `/team-status` | Show current status, channel, active task |
-| `/team-roster` | Print all agents on the channel |
+| `/team-roster` | Print all agents on the channel with status |
 | `/team-history [n]` | Show last N messages (default 20) |
 
-#### 7.2 — `extensions/index.ts`
+**Task commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/task-status` | Show active task (if working on one) + all outbound delegated tasks with status, assignee, elapsed time |
+| `/task-list` | List all tasks on the channel (all agents) with task_id, from, to, status, timestamps |
+| `/task-cancel [task_id]` | Manually cancel an outbound task by task_id. Sends `task_cancel` message. |
+| `/task-history <task_id>` | Show full message history for a specific task (all messages with matching task_id) |
+
+#### 7.2 — CLI Flags for Programmatic Startup
+
+Two CLI flags allow users to start agents programmatically without manual `/team-*` commands — ideal for scripting multiple teammates in iTerm tabs or tmux panes:
+
+```bash
+# Start a code reviewer agent on the "project-alpha" channel
+pi --team-channel project-alpha --agent-name "Code Reviewer"
+
+# Start a tester agent on the same channel
+pi --team-channel project-alpha --agent-name "Tester"
+```
+
+**Registration:**
+
+```ts
+pi.registerFlag("team-channel", {
+  description: "Auto-join a team channel on startup (requires --agent-name)",
+  type: "string",
+});
+
+pi.registerFlag("agent-name", {
+  description: "Agent name for team registration (requires --team-channel)",
+  type: "string",
+});
+```
+
+**Auto-bootstrap on `session_start`:**
+
+```ts
+pi.on("session_start", async (_event, ctx) => {
+  const channel = pi.getFlag("team-channel") as string | undefined;
+  const agentName = pi.getFlag("agent-name") as string | undefined;
+
+  if (!channel && !agentName) return;  // no flags, normal startup
+
+  if (!channel || !agentName) {
+    ctx.ui.notify("--team-channel and --agent-name must be used together", "error");
+    return;
+  }
+
+  // 1. Create channel DB if it doesn't exist
+  const dbPath = getDbPath(channel);
+  if (existsSync(dbPath)) {
+    console.log(`[teammate] Channel "${channel}" already exists, skipping creation`);
+  } else {
+    mkdirSync(BASE_DIR, { recursive: true });
+    const db = new Database(dbPath);
+    initSchema(db);
+    db.close();
+    console.log(`[teammate] Created channel: ${channel}`);
+  }
+
+  // 2. Auto-register and start MAMORU
+  const persona = loadPersona(ctx.cwd);
+  mamoru = new Mamoru({
+    db: openDb(channel),
+    sessionId: ctx.sessionManager.getSessionId(),
+    channel,
+    agentName,
+    persona,
+    pi,
+    ctx,
+    roster: new Roster(),
+    config: defaultMamoruConfig,
+  });
+  mamoru.start();
+
+  console.log(`[teammate] Joined "${channel}" as "${agentName}"`);
+});
+```
+
+This means a multi-agent team can be launched with a simple shell script:
+
+```bash
+#!/bin/bash
+# launch-team.sh — start 3 agents in tmux panes
+tmux new-session -d -s team
+
+tmux send-keys "cd ~/agents/planner && pi --team-channel project-alpha --agent-name Planner" Enter
+tmux split-window -h
+tmux send-keys "cd ~/agents/developer && pi --team-channel project-alpha --agent-name Developer" Enter
+tmux split-window -v
+tmux send-keys "cd ~/agents/reviewer && pi --team-channel project-alpha --agent-name Reviewer" Enter
+
+tmux attach -t team
+```
+
+Each agent directory has its own `persona.yaml` and `file-permissions.yaml`.
+
+#### 7.3 — `extensions/index.ts`
 
 The entry point wires everything:
 
@@ -784,7 +884,7 @@ export default function(pi: ExtensionAPI) {
 }
 ```
 
-#### 7.3 — `extensions/talk-prompt-handler.ts` (adapted)
+#### 7.4 — `extensions/talk-prompt-handler.ts` (adapted)
 
 The fun chat mode is refactored to work with the new framework:
 
@@ -863,6 +963,15 @@ describe("multi-agent integration", () => {
   describe("heartbeat/liveness", () => {
     test("A pings B, B auto-pongs");
     test("A pings C (no response), A marks C inactive after pingTimeoutSeconds");
+  });
+
+  describe("CLI flag auto-bootstrap", () => {
+    test("--team-channel + --agent-name creates DB if not exists and auto-joins");
+    test("--team-channel + --agent-name skips DB creation if already exists");
+    test("--team-channel without --agent-name shows error");
+    test("--agent-name without --team-channel shows error");
+    test("auto-bootstrapped agent broadcasts agent_join");
+    test("auto-bootstrapped agent appears in other agents' rosters");
   });
 });
 ```
