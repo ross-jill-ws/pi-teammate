@@ -388,7 +388,7 @@ export function registerCommands(
   // ── /mamoru overlay (toggle) ──────────────────────────────────
   //
   // The overlay is non-capturing: the user can type in the editor while it's
-  // visible. Ctrl+Alt+3 cycles through: show → focus (scroll) → close.
+  // visible. Ctrl+Shift+M cycles through: show → focus (scroll) → close.
   // Esc from focused state returns to non-capturing (typing) mode.
   //
   let activeMamoruOverlay: MamoruOverlay | null = null;
@@ -449,13 +449,13 @@ export function registerCommands(
   }
 
   pi.registerCommand("mamoru", {
-    description: "Toggle MAMORU event log overlay (non-blocking, Ctrl+Alt+3 to focus/close)",
+    description: "Toggle MAMORU event log overlay (non-blocking, Ctrl+Shift+M to focus/close)",
     handler: async (_args, ctx) => {
       showMamoruOverlay(ctx);
     },
   });
 
-  pi.registerShortcut(Key.ctrlAlt("3" as any), {
+  pi.registerShortcut(Key.ctrlShift("m"), {
     description: "Toggle MAMORU event log (show → focus → close)",
     handler: async (ctx) => {
       showMamoruOverlay(ctx);
