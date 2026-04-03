@@ -172,10 +172,7 @@ export class MamoruOverlay implements Focusable {
 
   handleInput(data: string): void {
     if (matchesKey(data, "escape")) {
-      // Unfocus (return to editor) instead of closing
-      if (this.overlayHandle) {
-        this.overlayHandle.unfocus();
-      }
+      this.close();
       return;
     }
 
@@ -240,8 +237,8 @@ export class MamoruOverlay implements Focusable {
     // ── Footer ────────────────────────────────────────────────────
     const footerLines: string[] = [];
     const hint = this.focused
-      ? " ↑↓ scroll  PgUp/PgDn  Esc unfocus  Alt+3 close "
-      : " Alt+3 focus/close ";
+      ? " ↑↓ scroll  PgUp/PgDn  Esc/Alt+3 close "
+      : " Alt+3 focus  Esc close ";
     const dashBefore = Math.max(0, innerW - hint.length);
     footerLines.push(
       th.fg("border", "└" + "─".repeat(dashBefore)) +
