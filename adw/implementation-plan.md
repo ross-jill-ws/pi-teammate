@@ -877,11 +877,16 @@ export default function(pi: ExtensionAPI) {
   // Register shortcuts for overlay popups
   registerShortcuts(pi, () => mamoru);
 
-  // Cleanup
+  // Cleanup — graceful shutdown when user quits pi
   pi.on("session_shutdown", async () => {
-    mamoru?.stop();
+    mamoru?.stop();  // broadcasts agent_leave + marks inactive in DB
+    mamoru = null;
+    if (activeDb) { try { activeDb.close(); } catch {} activeDb = null; }
   });
 }
+```
+
+**Graceful shutdown**: When the user quits pi (Ctrl+D, `/exit`, or closes the terminal), the `session_shutdown` event fires. `mamoru.stop()` broadcasts an `agent_leave` message and marks the agent as `inactive` in the DB. Other agents' MAMORUs pick this up on their next poll cycle and remove the agent from their roster. No orphaned agents.
 ```
 
 #### 7.4 — `extensions/talk-prompt-handler.ts` (adapted)
@@ -1086,11 +1091,17 @@ Also registered as **Ctrl+Shift+M** shortcut for quick access. Uses `nonCapturin
 
 **Shortcut convention**: pi-teammate uses a **prefix key** system (`Ctrl+T` then a letter) to avoid conflicts with all other extensions and terminal apps. This is similar to tmux's `Ctrl+B` prefix:
 
-- `Ctrl+T` → `m` : MAMORU event log overlay (toggle: show → focus → close)
+- `Ctrl+T` → `m` : MAMORU event log overlay (toggle focus/unfocus; Esc closes)
 - `Ctrl+T` → `r` : Roster detail overlay
 - `Ctrl+T` → `t` : Task detail overlay
 
-After pressing `Ctrl+T`, a status bar hint appears showing available keys. The prefix times out after 1.5 seconds if no second key is pressed.
+After pressing `Ctrl+T`, a status bar hint appears showing available keys. The prefix times out after 1.5 seconds if no second key is pressed. A 150ms debounce after Ctrl+T prevents the key release event from being interpreted as the second key (Kitty keyboard protocol).
+
+MAMORU overlay UX:
+1. `Ctrl+T m` → open (non-capturing, user can type in editor)
+2. `Ctrl+T m` again → enter FOCUSED mode (scrollable with ↑↓/j/k/PgUp/PgDn)
+3. `Ctrl+T m` again → back to unfocused (cycle)
+4. `Esc` → always closes the overlay (works in both focused and unfocused modes)
 
 This avoids conflicts with `pi-subagent-in-memory` (`Ctrl+N`), terminal apps, and macOS system shortcuts. Implemented in `extensions/prefix-keys.ts` using `ctx.ui.onTerminalInput()`.
 
