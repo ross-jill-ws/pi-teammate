@@ -39,7 +39,7 @@ description: >
 ### Design Notes
 
 - **`name`** and **`description`** are broadcast to all teammates on join, so other agents know what this agent can do. The `description` field must also be added to the `agents` table (see updated schema below).
-- **`provider`** and **`model`** are metadata for the team — useful for debugging, cost tracking, and understanding agent capabilities. Not broadcast by default but stored in the `agents` table.
+- **`provider`** and **`model`** are internal metadata — useful for debugging and cost tracking. Stored in the `agents` table but **not broadcast** to teammates (they don't need to know your LLM implementation).
 - **Skills and MCP tools** are the agent's own equipment and are _not_ broadcast to teammates.
 
 ### File Access Control via `pi-file-permissions`
@@ -141,6 +141,7 @@ The `payload` column is a JSON string with the following structure:
 ```jsonc
 {
   "event": "task_req",          // see event types below
+  "intent": "code_review",      // freeform hint for the listener (see below)
   "need_reply": true,           // whether the recipient should respond
   "content": "Short summary",   // max 500 chars, enforced by the extension
   "detail": "/abs/path/to/file" // optional; file path for large content (task results, specs, etc.)
@@ -152,6 +153,7 @@ The `payload` column is a JSON string with the following structure:
 | Field | Type | Description |
 |-------|------|-------------|
 | `event` | string (enum) | The message event type (see below). |
+| `intent` | string \| null | Freeform hint telling the listener what kind of `event` this is. Not an enum — extensible without schema changes. MAMORU uses it as a routing/handling hint. See §3.3 for common intents. |
 | `need_reply` | boolean | `true` = recipient must respond. `false` = informational only. |
 | `content` | string | Brief message body. Max 500 characters. Enforced at the extension level. |
 | `detail` | string \| null | Absolute file path the recipient should read for full context. May reference further files. Use for task results (`task_done`), detailed specs, etc. If `content` alone is sufficient, set to `null`. |
@@ -188,6 +190,21 @@ Events are grouped by purpose. **Role** indicates who sends the event relative t
 | `task_fail` | worker → requester | `false` | Task failed. Reason is in `content`. |
 | `task_cancel` | requester → worker | `true` | Request cancellation of an in-flight task. |
 | `task_cancel_ack` | worker → requester | `false` | Acknowledge cancellation. |
+
+### Common Intents
+
+The `intent` field is freeform, but these are the conventional values:
+
+| Event | Intent | Description |
+|-------|--------|-------------|
+| `broadcast` | `agent_join` | Agent introducing itself to the team (name + description). |
+| `broadcast` | `agent_leave` | Agent announcing it's going offline. |
+| `broadcast` | `agent_status_change` | Agent status changed (e.g., busy → available). |
+| `task_req` | _(domain-specific)_ | Hints at the kind of work, e.g., `code_review`, `write_tests`, `refactor`. |
+| `task_update` | `task_progress` | Periodic progress update. |
+| `task_cancel` | `task_timeout` | Cancellation due to timeout (vs. explicit user/agent cancellation). |
+
+MAMORU uses `intent` to decide how to handle a message (e.g., `agent_join` triggers roster update, `agent_status_change` triggers tool description refresh). The LLM never needs to parse `intent` — it's a machine-to-machine hint.
 
 ### Task Correlation
 
@@ -301,8 +318,24 @@ Most message events don't need LLM involvement. Acknowledging a ping, accepting 
                      │  └─────────┘    └─────────┘  │
                      │   auto-reply      task work   │
                      │   status mgmt     reasoning   │
+                     │   roster mgmt                 │
                      └──────────────────────────────┘
 ```
+
+### Polling Interval
+
+MAMORU polls the SQLite database on a configurable interval:
+
+```yaml
+# MAMORU config
+poll_interval_ms: 1000    # default
+```
+
+**1 second is the right default.** The poll query (`SELECT ... WHERE message_id > ? LIMIT N`) is an index seek on an integer primary key — sub-millisecond even with thousands of messages. With 10 agents polling every 1s, that's 10 reads/second total on the SQLite file. WAL mode handles concurrent readers without blocking — this is negligible load.
+
+1s polling makes the system feel responsive: `task_ack` comes back almost instantly, `ping`/`pong` gets 20 poll cycles within the 20s timeout, and status changes propagate quickly across the team.
+
+No need for WebSocket, filesystem watchers, or anything fancier. The whole appeal of the SQLite bus is that simple polling is cheap enough to be the right answer.
 
 ### Status Lifecycle
 
@@ -332,8 +365,10 @@ MAMORU maintains the agent's status in the `agents` table:
 | `task_req` (status=`available`) | Auto-reply `task_ack`. Set status → `busy`. Forward task to LLM. |
 | `task_req` (status=`busy`) | Auto-reply `task_reject` with reason "busy". |
 | `task_cancel` | Interrupt LLM. Auto-reply `task_cancel_ack`. Set status → `available`. |
-| `broadcast` | Store in context buffer for LLM awareness. No reply. |
-| `info_only` | Store in context buffer for LLM awareness. No reply. |
+| `broadcast` (intent=`agent_join`) | Add agent to in-memory roster. Refresh `delegate_task` tool description. |
+| `broadcast` (intent=`agent_leave`) | Remove agent from roster. Refresh `delegate_task` tool description. |
+| `broadcast` (intent=`agent_status_change`) | Update roster entry. Refresh `delegate_task` tool description. |
+| `broadcast` / `info_only` (other) | Store in context buffer for LLM awareness. No reply. |
 | `task_ack` | Note acknowledgement. No action needed. |
 | `task_reject` | Forward to LLM so it can choose another agent. |
 | `task_cancel_ack` | Note cancellation confirmed. Set status → `available`. |
@@ -361,6 +396,27 @@ When the LLM finishes work or needs to communicate, it uses the `send_message` t
 | `task_clarify` | Send message. Status stays `busy` (awaiting response). |
 | All others | Send message. No status change. |
 
+### Teammate Roster & `delegate_task` Tool
+
+MAMORU maintains an **in-memory roster** of all teammates, updated in real-time via broadcast messages and heartbeat checks. This roster drives a dynamic `delegate_task` tool whose description is rewritten whenever the roster changes:
+
+```
+delegate_task: Assign a task to a teammate.
+
+Available teammates:
+  - "Code Reviewer 1" (session: abc123) — available — Reviews code for correctness and bugs
+  - "Code Reviewer 2" (session: def456) — busy — Reviews code for correctness and bugs
+  - "Tester" (session: ghi789) — available — Writes and runs test suites
+```
+
+The LLM never queries the database for teammates — it sees the current state directly in the tool description and naturally picks the right agent. When a teammate joins, leaves, or changes status, MAMORU refreshes the tool description so the LLM's next turn always has current information.
+
+**Roster update triggers:**
+- `broadcast` with intent `agent_join` → add to roster
+- `broadcast` with intent `agent_leave` → remove from roster
+- `broadcast` with intent `agent_status_change` → update status
+- Stale heartbeat detected → mark `inactive`, update roster
+
 ### Heartbeat & Liveness
 
 MAMORU handles heartbeat in two ways:
@@ -368,7 +424,7 @@ MAMORU handles heartbeat in two ways:
 1. **Passive**: Every time MAMORU processes any message or polls, it updates `last_heartbeat` in the `agents` table.
 2. **Active**: Other agents (or their MAMORUs) can send `ping`. If no `pong` is received within **20 seconds**, the sender's MAMORU marks the target agent as `inactive`.
 
-An `inactive` agent is excluded from task routing. If the agent comes back online, its MAMORU updates the heartbeat and sets status back to `available`.
+An `inactive` agent is excluded from task routing (removed from `delegate_task` tool description). If the agent comes back online, its MAMORU updates the heartbeat, sets status back to `available`, and broadcasts `agent_status_change`.
 
 ---
 
@@ -413,26 +469,28 @@ description: >                         description: >
   for correctness and style.             for correctness and style.
 ```
 
-### Task Routing
+### Task Routing via `delegate_task`
 
-When a requester agent needs to send a `task_req`, it (or its MAMORU) queries the `agents` table to find an available agent with a matching role:
+The LLM doesn't need to query the database or reason about routing. It simply calls `delegate_task` with a task description, and the tool description already shows all teammates and their current status (maintained by MAMORU, see §5).
 
-```sql
--- Find an available agent by role description (keyword match or exact name)
-SELECT session_id, agent_name
-FROM agents
-WHERE status = 'available'
-  AND description LIKE '%code review%'
-ORDER BY last_heartbeat DESC
-LIMIT 1;
+The LLM picks the right agent naturally from context:
+
+```
+// LLM sees this tool description:
+delegate_task: Assign a task to a teammate.
+
+Available teammates:
+  - "Code Reviewer 1" (session: abc123) — available — Reviews code for correctness and bugs
+  - "Code Reviewer 2" (session: def456) — busy — Reviews code for correctness and bugs
+  - "Tester" (session: ghi789) — available — Writes and runs test suites
+
+// LLM calls:
+delegate_task({ to: "abc123", task: "Review PR #123 for security issues" })
 ```
 
-If no agent is available, the requester can:
-1. **Wait and retry** — poll until an agent becomes `available`.
-2. **Queue the task** — store it locally and check periodically.
-3. **Report to the user** — "All code reviewers are busy."
+If the chosen agent is busy (race condition between poll cycles), MAMORU auto-rejects with `task_reject` and the LLM picks another agent on the next turn.
 
-The exact routing strategy is up to the requester's LLM or can be handled by MAMORU with simple rules.
+If **no agents** are available, the LLM can see that from the tool description and report to the user: "All code reviewers are currently busy."
 
 ---
 
