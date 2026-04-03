@@ -1,9 +1,12 @@
 /**
  * MAMORU event log overlay — shows all events handled by the guardian process.
  *
- * Anchored to the right side (1/3 width, 100% height). Supports vertical scrolling
- * via ↑/↓/PageUp/PageDown keys. Auto-scrolls to bottom on new events unless the
- * user has manually scrolled up.
+ * Anchored to the right side (1/3 width, 100% height). Non-capturing by default
+ * so the user can type in the editor while viewing events. Auto-scrolls to bottom.
+ *
+ * When focused (via Ctrl+3 toggle), supports vertical scrolling:
+ * ↑/↓/j/k, PageUp/PageDown, Home/End (g/G). Esc unfocuses back to editor.
+ * Ctrl+3 again closes the overlay entirely.
  */
 import type { Focusable } from "@mariozechner/pi-tui";
 import { matchesKey, visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
@@ -118,6 +121,8 @@ export class MamoruOverlay implements Focusable {
   private lastEntryCount = 0;
   private animTimer: ReturnType<typeof setInterval> | null = null;
   private tui: any;
+  private overlayHandle: any = null;
+  private onClose: (() => void) | null = null;
 
   constructor(
     private getEntries: () => MamoruEventLog[],
@@ -139,9 +144,38 @@ export class MamoruOverlay implements Focusable {
     }, 500);
   }
 
+  /** Set the overlay handle for focus/unfocus control */
+  setHandle(handle: any, onClose: () => void): void {
+    this.overlayHandle = handle;
+    this.onClose = onClose;
+  }
+
+  /** Toggle focus on/off from external shortcut */
+  toggleFocus(): void {
+    if (this.overlayHandle) {
+      if (this.overlayHandle.isFocused()) {
+        this.overlayHandle.unfocus();
+      } else {
+        this.overlayHandle.focus();
+      }
+    }
+  }
+
+  /** Close the overlay entirely */
+  close(): void {
+    if (this.overlayHandle) {
+      this.overlayHandle.hide();
+    }
+    this.onClose?.();
+    this.done();
+  }
+
   handleInput(data: string): void {
     if (matchesKey(data, "escape")) {
-      this.done();
+      // Unfocus (return to editor) instead of closing
+      if (this.overlayHandle) {
+        this.overlayHandle.unfocus();
+      }
       return;
     }
 
@@ -194,15 +228,20 @@ export class MamoruOverlay implements Focusable {
     headerLines.push(row(th.fg("accent", th.bold(" 守 MAMORU Event Log"))));
 
     const countText = `${entries.length} events`;
-    const scrollHint = this.userScrolled
-      ? colorize(FG.yellow, " (scrolled)")
+    const focusState = this.focused
+      ? colorize(FG.green, " [FOCUSED]")
       : colorize(FG.dim, " (live)");
-    headerLines.push(row(` ${colorize(FG.dim, countText)}${scrollHint}`));
+    const scrollHint = this.userScrolled && this.focused
+      ? colorize(FG.yellow, " scrolled")
+      : "";
+    headerLines.push(row(` ${colorize(FG.dim, countText)}${focusState}${scrollHint}`));
     headerLines.push(th.fg("border", "├" + "─".repeat(innerW) + "┤"));
 
     // ── Footer ────────────────────────────────────────────────────
     const footerLines: string[] = [];
-    const hint = " ↑↓ scroll  PgUp/PgDn  Home/End  Esc close ";
+    const hint = this.focused
+      ? " ↑↓ scroll  PgUp/PgDn  Esc unfocus  Ctrl+3 close "
+      : " Ctrl+3 focus/close ";
     const dashBefore = Math.max(0, innerW - hint.length);
     footerLines.push(
       th.fg("border", "└" + "─".repeat(dashBefore)) +

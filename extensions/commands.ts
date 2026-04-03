@@ -385,67 +385,80 @@ export function registerCommands(
     },
   });
 
-  // ── /mamoru ──────────────────────────────────────────────────
-  pi.registerCommand("mamoru", {
-    description: "Show MAMORU event log overlay (all received/sent events)",
-    handler: async (_args, ctx) => {
-      const mamoru = getMamoru();
-      if (!mamoru) {
-        ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
-        return;
-      }
+  // ── /mamoru overlay (toggle) ──────────────────────────────────
+  //
+  // The overlay is non-capturing: the user can type in the editor while it's
+  // visible. Ctrl+3 cycles through: show → focus (scroll) → close.
+  // Esc from focused state returns to non-capturing (typing) mode.
+  //
+  let activeMamoruOverlay: MamoruOverlay | null = null;
 
-      await ctx.ui.custom<void>(
-        (tui: any, theme: any, _keybindings: any, done: (result: void) => void) => {
-          return new MamoruOverlay(
-            () => mamoru.getEventLog(),
-            theme,
-            done,
-            tui,
-          );
+  function showMamoruOverlay(ctx: any) {
+    const mamoru = getMamoru();
+    if (!mamoru) {
+      ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
+      return;
+    }
+
+    // If overlay exists, toggle focus or close
+    if (activeMamoruOverlay) {
+      if (activeMamoruOverlay.focused) {
+        // Focused → close
+        activeMamoruOverlay.close();
+        activeMamoruOverlay = null;
+      } else {
+        // Visible but not focused → focus (enable scrolling)
+        activeMamoruOverlay.toggleFocus();
+      }
+      return;
+    }
+
+    // Show new overlay (non-capturing — user can keep typing)
+    ctx.ui.custom<void>(
+      (tui: any, theme: any, _keybindings: any, done: (result: void) => void) => {
+        const overlay = new MamoruOverlay(
+          () => mamoru.getEventLog(),
+          theme,
+          done,
+          tui,
+        );
+        activeMamoruOverlay = overlay;
+        return overlay;
+      },
+      {
+        overlay: true,
+        overlayOptions: {
+          anchor: "top-right",
+          width: "34%",
+          maxHeight: "100%",
+          margin: 0,
+          nonCapturing: true,
         },
-        {
-          overlay: true,
-          overlayOptions: {
-            anchor: "top-right",
-            width: "34%",
-            maxHeight: "100%",
-            margin: 0,
-          },
+        onHandle: (handle: any) => {
+          if (activeMamoruOverlay) {
+            activeMamoruOverlay.setHandle(handle, () => {
+              activeMamoruOverlay = null;
+            });
+          }
         },
-      );
+      },
+    ).then(() => {
+      // Overlay was closed (done() called)
+      activeMamoruOverlay = null;
+    });
+  }
+
+  pi.registerCommand("mamoru", {
+    description: "Toggle MAMORU event log overlay (non-blocking, Ctrl+3 to focus/close)",
+    handler: async (_args, ctx) => {
+      showMamoruOverlay(ctx);
     },
   });
 
-  // Also register Ctrl+3 shortcut for quick access
   pi.registerShortcut(Key.ctrl("3" as any), {
-    description: "Show MAMORU event log",
+    description: "Toggle MAMORU event log (show → focus → close)",
     handler: async (ctx) => {
-      const mamoru = getMamoru();
-      if (!mamoru) {
-        ctx.ui.notify("Not connected to any team channel.", "warning");
-        return;
-      }
-
-      await ctx.ui.custom<void>(
-        (tui: any, theme: any, _keybindings: any, done: (result: void) => void) => {
-          return new MamoruOverlay(
-            () => mamoru.getEventLog(),
-            theme,
-            done,
-            tui,
-          );
-        },
-        {
-          overlay: true,
-          overlayOptions: {
-            anchor: "top-right",
-            width: "34%",
-            maxHeight: "100%",
-            margin: 0,
-          },
-        },
-      );
+      showMamoruOverlay(ctx);
     },
   });
 
