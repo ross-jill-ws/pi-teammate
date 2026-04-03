@@ -7,7 +7,7 @@ import { mkdirSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const BASE_DIR = join(homedir(), ".pi", "pi-agent-talk");
+const BASE_DIR = join(homedir(), ".pi", "pi-teammate");
 
 interface MessageRow {
   message_id: number;
@@ -272,9 +272,9 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(`Registered as "${agentName}" on channel "${channelName}". Polling started.`, "info");
 
       // Show initial widget
-      ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] No new message`]);
+      ctx.ui.setWidget("teammate", [`[${activeDbFileName}] No new message`]);
 
-      // Start polling every 3 seconds
+      // Start polling every 1 second
       startPolling(ctx);
     },
   });
@@ -474,7 +474,7 @@ export default function (pi: ExtensionAPI) {
           .all(activeSessionId, activeChannel, activeSessionId, activeSessionId, activeAgentName) as MessageRow[];
 
         if (rows.length === 0) {
-          ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] No new message`]);
+          ctx.ui.setWidget("teammate", [`[${activeDbFileName}] No new message`]);
           return;
         }
 
@@ -493,7 +493,7 @@ export default function (pi: ExtensionAPI) {
           });
         }
 
-        ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] last message_id: ${maxId}`]);
+        ctx.ui.setWidget("teammate", [`[${activeDbFileName}] last message_id: ${maxId}`]);
 
         // Advance cursor
         if (maxId > 0) {
@@ -512,9 +512,9 @@ export default function (pi: ExtensionAPI) {
           .prepare(`UPDATE agents SET last_heartbeat = ? WHERE session_id = ?`)
           .run(Date.now(), activeSessionId);
       } catch (err: any) {
-        ctx.ui.setWidget("agent-talk", [`[${activeDbFileName}] Poll error: ${err.message}`]);
+        ctx.ui.setWidget("teammate", [`[${activeDbFileName}] Poll error: ${err.message}`]);
       }
-    }, 3000);
+    }, 1000);
   }
 
   function stopPolling() {

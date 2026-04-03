@@ -97,12 +97,12 @@ export default function (pi: ExtensionAPI) {
     // Send only the latest assistant reply, not every assistant message from the run.
     const messages = event.messages ?? [];
 
-    ctx.ui.setStatus("agent-talk-reply", `agent_end: ${messages.length} messages`);
+    ctx.ui.setStatus("teammate-reply", `agent_end: ${messages.length} messages`);
 
     const responseText = extractLatestAssistantReply(messages);
     if (!responseText) {
       ctx.ui.notify(
-        `agent-talk-reply: No assistant text found in ${messages.length} messages (roles: ${messages.map((m: any) => m.role).join(", ")})`,
+        `teammate-reply: No assistant text found in ${messages.length} messages (roles: ${messages.map((m: any) => m.role).join(", ")})`,
         "warning",
       );
       return;
@@ -130,7 +130,7 @@ export default function (pi: ExtensionAPI) {
       db.close();
       ctx.ui.notify(`Reply sent to ${reply.fromAgent}`, "info");
     } catch (err: any) {
-      ctx.ui.notify(`agent-talk-reply DB error: ${err.message}`, "error");
+      ctx.ui.notify(`teammate-reply DB error: ${err.message}`, "error");
     }
   });
 }

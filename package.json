@@ -1,5 +1,5 @@
 {
-  "name": "pi-agent-talk",
+  "name": "pi-teammate",
   "version": "0.1.0",
   "description": "Pi agent-to-agent communication via shared SQLite message bus",
   "license": "MIT",
