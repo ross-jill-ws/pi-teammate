@@ -93,10 +93,12 @@ CREATE TABLE messages (
   from_agent TEXT NOT NULL,       -- session_id of sender
   to_agent TEXT,                  -- session_id for DM, NULL for broadcast
   channel TEXT NOT NULL,          -- team/group identifier
-  ref_message_id INTEGER,        -- references the original message_id for task correlation
+  task_id INTEGER,               -- the originating task_req's message_id (same for all messages in a task)
+  ref_message_id INTEGER,        -- the specific message this is replying to (reply chain)
   payload TEXT NOT NULL,          -- JSON (see §3 for schema)
   created_at INTEGER NOT NULL,   -- epoch ms
   FOREIGN KEY (from_agent) REFERENCES agents(session_id),
+  FOREIGN KEY (task_id) REFERENCES messages(message_id),
   FOREIGN KEY (ref_message_id) REFERENCES messages(message_id)
 );
 
@@ -206,18 +208,35 @@ The `intent` field is freeform, but these are the conventional values:
 
 MAMORU uses `intent` to decide how to handle a message (e.g., `agent_join` triggers roster update, `agent_status_change` triggers tool description refresh). The LLM never needs to parse `intent` — it's a machine-to-machine hint.
 
-### Task Correlation
+### Task Correlation: `task_id` vs `ref_message_id`
 
-All task-related replies **must** set `ref_message_id` on the `messages` row to the `message_id` of the original `task_req`. This allows both agents to correlate the full conversation around a task, especially when multiple tasks are in-flight simultaneously.
+These two fields serve different purposes:
+
+- **`task_id`** — the originating `task_req`'s `message_id`. **Same for ALL messages in a task conversation.** This is the **correlation key** that groups an entire task lifecycle together.
+- **`ref_message_id`** — which specific message this is directly responding to. This is the **reply chain** for conversational threading.
+
+For `task_req` itself: `task_id` = its own `message_id` (self-referencing), `ref_message_id` = `NULL`.
+For non-task messages (`broadcast`, `info_only`, `ping`, `pong`): both are `NULL`.
 
 ```
-task_req (message_id=42)
-  ← task_ack         (ref_message_id=42)
-  ← task_clarify     (ref_message_id=42)
-  → task_clarify_res (ref_message_id=42)
-  ← task_update      (ref_message_id=42)
-  ← task_done        (ref_message_id=42)
+task_req       (message_id=42, task_id=42,  ref_message_id=NULL)
+  ← task_ack         (message_id=43, task_id=42,  ref_message_id=42)
+  ← task_clarify     (message_id=44, task_id=42,  ref_message_id=42)
+  → task_clarify_res (message_id=45, task_id=42,  ref_message_id=44)  ← replies to the clarify
+  ← task_update      (message_id=46, task_id=42,  ref_message_id=42)
+  ← task_done        (message_id=47, task_id=42,  ref_message_id=42)
 ```
+
+### Message Delivery
+
+When MAMORU forwards a message to the LLM via `pi.sendUserMessage()`, it must decide the delivery mode. The routing key is `task_id`:
+
+| Condition | Delivery | Rationale |
+|-----------|----------|----------|
+| `task_id == message_id` | _MAMORU auto-handles_ | New `task_req` — auto-ack/auto-reject. Never reaches `forwardToLlm`. |
+| Everything else | `steer` | If it passed MAMORU's auto-handling and needs LLM attention, it's relevant now. |
+
+That's it — two rules. A new `task_req` is identified by `task_id == message_id` (self-referencing). The LLM already knows agent availability via the `delegate_task` tool roster, so it wouldn't send a task to a busy agent in the first place. Everything that reaches `forwardToLlm` is always `steer`.
 
 ---
 
@@ -282,19 +301,21 @@ When a worker needs help from another agent, it becomes a **new requester** with
 ```
 Agent A (Planner)          Agent B (Developer)          Agent C (Tester)
        │                          │                            │
-       │── task_req(id=42) ──────▶│                            │
+       │── task_req ─────────────▶│  (message_id=42, task_id=42)
        │   "Build auth feature"   │                            │
-       │◀──── task_ack ──────────│                            │
+       │◀──── task_ack ──────────│  (task_id=42, ref=42)       │
        │                          │                            │
-       │                          │── task_req(id=78) ────────▶│
+       │                          │── task_req ────────────────▶│  (message_id=78, task_id=78)
        │                          │   "Write tests for oauth"  │
-       │                          │◀──── task_ack ────────────│
-       │                          │◀──── task_done ───────────│
+       │                          │◀──── task_ack ────────────│  (task_id=78, ref=78)
+       │                          │◀──── task_done ───────────│  (task_id=78, ref=78)
+       │                          │  not a new task (78≠msg_id)│
+       │                          │  → steer to B's LLM       │
        │                          │                            │
-       │◀──── task_done ─────────│                            │
+       │◀──── task_done ─────────│  (task_id=42, ref=42)       │
 ```
 
-Agent B's `task_req(id=78)` to Agent C is a completely separate task. Agent A has no visibility into this sub-delegation.
+No special sub-delegation logic needed. C's `task_done` has `task_id ≠ message_id`, so it's not a new task — MAMORU steers it to B's LLM.
 
 ---
 
@@ -362,9 +383,9 @@ MAMORU maintains the agent's status in the `agents` table:
 | Incoming Event | MAMORU Action |
 |---------------|---------------|
 | `ping` | Auto-reply `pong`. Update `last_heartbeat`. |
-| `task_req` (status=`available`) | Auto-reply `task_ack`. Set status → `busy`. Forward task to LLM. |
+| `task_req` (status=`available`) | Auto-reply `task_ack`. Set status → `busy`. Set `activeTaskId`. Forward task to LLM. |
 | `task_req` (status=`busy`) | Auto-reply `task_reject` with reason "busy". |
-| `task_cancel` | Interrupt LLM. Auto-reply `task_cancel_ack`. Set status → `available`. |
+| `task_cancel` | Interrupt LLM. Auto-reply `task_cancel_ack`. Set status → `available`. Clear `activeTaskId`. |
 | `broadcast` (intent=`agent_join`) | Add agent to in-memory roster. Refresh `delegate_task` tool description. |
 | `broadcast` (intent=`agent_leave`) | Remove agent from roster. Refresh `delegate_task` tool description. |
 | `broadcast` (intent=`agent_status_change`) | Update roster entry. Refresh `delegate_task` tool description. |

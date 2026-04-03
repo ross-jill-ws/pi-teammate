@@ -9,7 +9,7 @@
 | File | Purpose | Status |
 |------|---------|--------|
 | `extensions/index.ts` | Channel/DB management, agent registration, polling, `send_agent_message` tool, slash commands | **Partially usable** — needs significant refactoring |
-| `extensions/talk-prompt-handler.ts` | Listens for `pi_talk_message` events, forwards every message to LLM, auto-replies | **Replace entirely** — this becomes MAMORU |
+| `extensions/talk-prompt-handler.ts` | Listens for `pi_talk_message` events, forwards every message to LLM, auto-replies | **Keep & adapt** — fun chat mode, refactor to work with new framework |
 | `package.json` | Package config with `better-sqlite3` dependency | **Minor updates** needed |
 
 ### Gap Analysis
@@ -21,12 +21,15 @@
 | MAMORU guardian loop | Simple polling that emits raw events to `pi.events` | **Major rewrite** — needs event routing, auto-responses, status machine |
 | Teammate roster (in-memory) | Not implemented | **New** |
 | `delegate_task` tool (dynamic description) | `send_agent_message` tool with static description | **Replace** |
+| `send_message` tool (LLM → MAMORU outbound) | Partially exists as `send_agent_message` | **Rewrite** to use new payload schema |
 | Event/intent-based payload | Messages use `type` column + raw `content` in payload | **Rewrite** message format |
 | Task lifecycle state machine | Not implemented | **New** |
 | Task timeout | Not implemented | **New** |
 | Heartbeat & liveness | Heartbeat updated on poll, but no ping/pong or inactive detection | **Extend** |
 | `agent_join`/`agent_leave` broadcasts | Not implemented | **New** |
+| TUI widget with task cards + popup overlay | Simple single-line widget | **Rewrite** — follow `pi-subagent-in-memory` pattern |
 | System prompt injection (persona) | `talk-prompt-handler.ts` injects ad-hoc prompt for replies | **Rewrite** — inject persona + task context |
+| Test suite | Not implemented | **New** — TDD approach |
 
 ---
 
@@ -36,25 +39,105 @@
 extensions/
 ├── index.ts                  # Extension entry point — wires everything together
 ├── schema.ts                 # SQLite schema init + migration
-├── db.ts                     # DB connection helpers, message read/write functions
+├── db.ts                     # DB helpers: message CRUD, agent CRUD, cursor ops
 ├── types.ts                  # Shared TypeScript types (MessageRow, Payload, Roster, etc.)
 ├── persona.ts                # Load & validate persona.yaml
 ├── mamoru.ts                 # MAMORU guardian loop (poll, route, auto-respond, status)
-├── roster.ts                 # In-memory teammate roster, delegate_task tool description builder
+├── roster.ts                 # In-memory teammate roster, delegate_task description builder
 ├── tools/
-│   └── delegate-task.ts      # delegate_task tool definition (dynamic description)
-└── commands.ts               # Slash commands (/team-build, /team-join, /team-leave, etc.)
+│   ├── delegate-task.ts      # delegate_task tool definition (dynamic description)
+│   └── send-message.ts       # send_message tool (LLM tells MAMORU to send outbound messages)
+├── tui/
+│   ├── teammate-widget.ts    # Main widget: team roster + task summary cards
+│   └── detail-overlay.ts     # Popup overlay for full task/roster details (Ctrl+N)
+├── commands.ts               # Slash commands (/team-create, /team-join, /team-leave, etc.)
+└── talk-prompt-handler.ts    # Fun mode: 2 agents chatting freely (adapted to new framework)
+
+tests/
+├── schema.test.ts            # Schema creation, WAL mode, table structure
+├── db.test.ts                # Message CRUD, cursor ops, agent registration
+├── persona.test.ts           # persona.yaml loading and validation
+├── mamoru.test.ts            # Event routing, auto-responses, status machine
+├── roster.test.ts            # Roster updates, delegate_task description building
+├── tools.test.ts             # delegate_task and send_message tool execution
+├── timeout.test.ts           # Task timeout, timer reset, cancellation flow
+├── integration.test.ts       # Multi-agent end-to-end flows (no LLM, mock pi.sendUserMessage)
+└── helpers/
+    └── mock-pi.ts            # Mock ExtensionAPI, mock pi.sendUserMessage, mock UI context
 ```
+
+---
+
+## Testing Strategy: TDD
+
+All core logic is tested **without loading the extension into a pi REPL**. The key insight from `create-session.ts` and the pi SDK is that `createAgentSession` works standalone — but for unit testing MAMORU and the DB layer, we don't even need an agent session. We test the logic directly.
+
+### Test Runner
+
+**Bun test** (`bun test`) — already installed, zero config, native TypeScript support.
+
+```jsonc
+// package.json additions
+{
+  "scripts": {
+    "test": "bun test",
+    "test:watch": "bun test --watch"
+  }
+}
+```
+
+### Mock Strategy
+
+The extension code is structured so that **MAMORU, roster, DB, and tools are pure logic** that receive dependencies via constructor injection — not by importing pi globals. This makes them testable in isolation.
+
+`tests/helpers/mock-pi.ts` provides:
+
+```ts
+// Minimal mock of ExtensionAPI for testing
+interface MockPi {
+  // Track calls
+  sentUserMessages: Array<{ content: string; options?: any }>;
+  registeredTools: Map<string, any>;
+  emittedEvents: Array<{ name: string; data: any }>;
+  widgetUpdates: Array<{ key: string; content: any }>;
+
+  // Mock implementations
+  sendUserMessage(content: string, options?: any): void;
+  registerTool(tool: any): void;
+  events: { emit(name: string, data: any): void; on(name: string, cb: any): void };
+}
+
+function createMockPi(): MockPi { ... }
+
+// In-memory SQLite DB for testing (better-sqlite3 supports :memory:)
+function createTestDb(): Database { ... }
+```
+
+### What Gets Tested (and What Doesn't)
+
+| Layer | Tested | How |
+|-------|--------|-----|
+| `schema.ts` | ✅ | Create tables in `:memory:` DB, verify structure |
+| `db.ts` | ✅ | CRUD ops on `:memory:` DB, cursor advancement |
+| `persona.ts` | ✅ | Parse YAML from temp files, validate required fields |
+| `mamoru.ts` | ✅ | Inject mock DB + mock pi, verify routing decisions + auto-replies |
+| `roster.ts` | ✅ | Pure in-memory logic, verify description generation |
+| `tools/*.ts` | ✅ | Execute with mock DB + mock pi, verify DB writes |
+| `timeout.ts` | ✅ | Use fake timers (`bun test` supports `jest.useFakeTimers()`) |
+| `tui/*.ts` | ❌ | Visual components — test manually in REPL |
+| `commands.ts` | ❌ | Slash commands depend on full pi context — test manually |
+| `talk-prompt-handler.ts` | ❌ | Fun mode — test manually with 2 agents |
+| Integration flows | ✅ | Multi-agent simulation with mock pi + real SQLite |
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Foundation (Schema + Types + DB Layer)
+### Phase 0: Test Infrastructure + Types
 
-**Goal**: New schema, clean DB access layer, shared types. No behavioral changes yet.
+**Goal**: Set up test harness, define all types, write test specs before any implementation.
 
-#### 1.1 — `extensions/types.ts`
+#### 0.1 — `extensions/types.ts`
 
 Define all shared TypeScript types:
 
@@ -118,11 +201,89 @@ interface RosterEntry {
   status: AgentStatus;
   last_heartbeat: number;
 }
+
+// MAMORU config
+interface MamoruConfig {
+  pollIntervalMs: number;       // default 1000
+  taskTimeoutMinutes: number;   // default 20
+  pingTimeoutSeconds: number;   // default 20
+}
 ```
 
-#### 1.2 — `extensions/schema.ts`
+#### 0.2 — `tests/helpers/mock-pi.ts`
 
-New schema initialization. Drop-and-recreate approach for now (no migration from old schema — this is pre-release).
+Create the mock harness.
+
+#### 0.3 — Write all test spec files
+
+Write test files with `describe` blocks and `test` stubs (using `test.todo` for not-yet-implemented). This defines the contract before writing any implementation.
+
+**Deliverable**: All test files exist with clear specs. `bun test` runs and shows N skipped/todo tests.
+
+---
+
+### Phase 1: Foundation (Schema + DB Layer)
+
+**Goal**: New schema, clean DB access layer. TDD — write tests first, then implement.
+
+#### Test Spec: `tests/schema.test.ts`
+
+```ts
+describe("schema", () => {
+  test("creates all three tables in a new DB");
+  test("sets WAL journal mode");
+  test("agents table has correct columns and constraints");
+  test("messages table has correct columns and foreign keys");
+  test("agent_cursors table has composite primary key");
+  test("agents status CHECK constraint rejects invalid values");
+  test("initSchema is idempotent (CREATE IF NOT EXISTS)");
+});
+```
+
+#### Test Spec: `tests/db.test.ts`
+
+```ts
+describe("agent operations", () => {
+  test("registerAgent inserts a new agent");
+  test("registerAgent upserts on conflict (same session_id)");
+  test("updateAgentStatus changes status");
+  test("updateAgentStatus rejects invalid status values");
+  test("updateHeartbeat sets last_heartbeat to current time");
+  test("getActiveAgents returns non-inactive agents");
+  test("getActiveAgents excludes inactive agents");
+  test("getAgentBySession returns correct agent");
+  test("getAgentBySession returns null for unknown session");
+  test("getAgentByName returns correct agent");
+});
+
+describe("message operations", () => {
+  test("sendMessage inserts a row and returns message_id");
+  test("sendMessage validates payload is valid JSON");
+  test("sendMessage validates content <= 500 chars");
+  test("sendMessage rejects content > 500 chars");
+  test("sendMessage allows null to_agent (broadcast)");
+  test("sendMessage allows null task_id for non-task messages");
+  test("sendMessage sets task_id for task-related messages");
+  test("sendMessage allows null ref_message_id");
+  test("sendMessage sets ref_message_id for task replies");
+  test("task_req sets task_id equal to its own message_id");
+});
+
+describe("cursor operations", () => {
+  test("initCursor sets last_read_id to 0");
+  test("advanceCursor updates last_read_id");
+  test("advanceCursor upserts on conflict");
+  test("getUnreadMessages returns messages after cursor position");
+  test("getUnreadMessages excludes own messages (from_agent != self)");
+  test("getUnreadMessages includes broadcasts (to_agent IS NULL)");
+  test("getUnreadMessages includes DMs to self");
+  test("getUnreadMessages excludes DMs to other agents");
+  test("getUnreadMessages returns empty array when fully caught up");
+  test("getUnreadMessages with cursor at 0 returns all messages");
+});
+```
+
+#### Implementation: `extensions/schema.ts`
 
 ```sql
 CREATE TABLE agents (
@@ -141,10 +302,12 @@ CREATE TABLE messages (
   from_agent TEXT NOT NULL,
   to_agent TEXT,
   channel TEXT NOT NULL,
-  ref_message_id INTEGER,
+  task_id INTEGER,               -- the originating task_req's message_id (correlation key)
+  ref_message_id INTEGER,        -- the specific message this replies to (reply chain)
   payload TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   FOREIGN KEY (from_agent) REFERENCES agents(session_id),
+  FOREIGN KEY (task_id) REFERENCES messages(message_id),
   FOREIGN KEY (ref_message_id) REFERENCES messages(message_id)
 );
 
@@ -157,227 +320,250 @@ CREATE TABLE agent_cursors (
 );
 ```
 
-#### 1.3 — `extensions/db.ts`
+#### Implementation: `extensions/db.ts`
 
-Thin wrapper around `better-sqlite3` with prepared statement helpers:
+Thin wrapper with prepared statements. All functions take `db: Database` as first argument (dependency injection, no global state).
 
-- `openDb(channelName): Database` — open/create DB, set WAL mode, init schema
-- `registerAgent(db, agent: AgentRow): void`
-- `updateAgentStatus(db, sessionId, status): void`
-- `updateHeartbeat(db, sessionId): void`
-- `sendMessage(db, msg: Omit<MessageRow, 'message_id'>): number` — returns message_id
-- `getUnreadMessages(db, sessionId, channel): MessageRow[]` — cursor-based read
-- `advanceCursor(db, sessionId, channel, lastReadId): void`
-- `getActiveAgents(db): AgentRow[]` — all non-inactive agents
-- `getAgentByName(db, name): AgentRow | null`
-- `getAgentBySession(db, sessionId): AgentRow | null`
-
-**Validation**: `sendMessage` validates payload JSON structure and 500-char content limit.
-
-#### 1.4 — `extensions/persona.ts`
-
-Load and validate `persona.yaml` from agent's cwd:
-
-- `loadPersona(cwd: string): PersonaConfig | null`
-- Uses `yaml` package (add dependency) or simple parsing
-- Returns `null` if file doesn't exist (agent can still work without persona)
-- Validates required fields: `name`, `description`
-- `provider` and `model` are optional (can fall back to pi's current model)
-
-**Deliverable**: All types defined. DB layer tested via slash command `/team-build`. Persona loads on startup.
+**Deliverable**: `bun test tests/schema.test.ts tests/db.test.ts` — all green.
 
 ---
 
-### Phase 2: MAMORU Core (Poll Loop + Event Router + Status Machine)
+### Phase 2: Persona Loading
 
-**Goal**: Replace `talk-prompt-handler.ts` with MAMORU. Implement the poll loop, event routing, and auto-responses.
+**Goal**: Load `persona.yaml`, validate required fields.
 
-#### 2.1 — `extensions/mamoru.ts`
+#### Test Spec: `tests/persona.test.ts`
 
-The MAMORU class/module:
+```ts
+describe("loadPersona", () => {
+  test("loads valid persona.yaml with all fields");
+  test("loads persona.yaml with only required fields (name, description)");
+  test("returns null when persona.yaml does not exist");
+  test("throws on invalid YAML syntax");
+  test("throws when name is missing");
+  test("throws when description is missing");
+  test("trims whitespace from name and description");
+  test("provider and model default to null when omitted");
+});
+```
+
+#### Implementation: `extensions/persona.ts`
+
+- Uses `yaml` package (add to dependencies)
+- Reads `{cwd}/persona.yaml`
+- Returns `PersonaConfig | null`
+
+**Deliverable**: `bun test tests/persona.test.ts` — all green.
+
+---
+
+### Phase 3: MAMORU Core (Poll Loop + Event Router + Status Machine)
+
+**Goal**: The heart of the system. Replace naive event forwarding with intelligent routing.
+
+#### Test Spec: `tests/mamoru.test.ts`
+
+```ts
+describe("MAMORU event routing", () => {
+  describe("ping/pong", () => {
+    test("auto-replies pong when receiving ping");
+    test("pong message has correct from_agent, to_agent, ref_message_id");
+    test("updates last_heartbeat on ping");
+    test("clears pending ping timer on pong received");
+  });
+
+  describe("task_req handling", () => {
+    test("auto-sends task_ack when status is available");
+    test("task_ack has correct task_id and ref_message_id");
+    test("sets status to busy after accepting task_req");
+    test("stores activeTaskId with the incoming task_id");
+    test("forwards task to LLM via pi.sendUserMessage after auto-ack");
+    test("auto-sends task_reject when status is busy");
+    test("task_reject includes reason 'Agent is currently busy'");
+    test("does not forward to LLM when rejecting");
+    test("does not change status when rejecting");
+  });
+
+  describe("task_cancel handling", () => {
+    test("auto-sends task_cancel_ack");
+    test("sets status to available");
+    test("clears activeTaskId");
+    test("calls pi abort to interrupt LLM");   // ctx.abort()
+  });
+
+  describe("broadcast routing", () => {
+    test("agent_join intent triggers roster update");
+    test("agent_leave intent triggers roster removal");
+    test("agent_status_change intent triggers roster update");
+    test("other intents are buffered for LLM context");
+    test("no auto-reply for any broadcast");
+  });
+
+  describe("LLM-forwarded events", () => {
+    test("task_clarify is forwarded to LLM");
+    test("task_clarify_res is forwarded to LLM");
+    test("task_reject is forwarded to LLM");
+    test("task_done is forwarded to LLM");
+    test("task_fail is forwarded to LLM");
+  });
+
+  describe("info_only handling", () => {
+    test("buffers message for LLM context");
+    test("no auto-reply");
+  });
+
+  describe("acknowledgement events", () => {
+    test("task_ack is noted but not forwarded to LLM");
+    test("task_cancel_ack sets status to available");
+  });
+});
+
+describe("MAMORU outbound handling", () => {
+  test("task_done sets status to available and clears activeTaskId");
+  test("task_fail sets status to available and clears activeTaskId");
+  test("task_update keeps status as busy");
+  test("task_clarify keeps status as busy");
+  test("broadcasts agent_status_change when status changes");
+});
+
+describe("MAMORU forwardToLlm", () => {
+  test("calls pi.sendUserMessage with structured message content");
+  test("includes from_agent name in the forwarded message");
+  test("includes event type in the forwarded message");
+  test("includes task_id and ref_message_id in the forwarded message");
+  test("includes detail file path when present");
+
+  describe("delivery", () => {
+    test("new task_req (task_id == message_id) never reaches forwardToLlm");
+    test("all other messages are delivered as steer");
+  });
+});
+
+describe("MAMORU poll loop", () => {
+  test("polls at configured interval");
+  test("updates heartbeat on every poll cycle");
+  test("advances cursor after processing messages");
+  test("processes multiple messages in order");
+  test("handles empty poll (no new messages) gracefully");
+});
+
+describe("MAMORU lifecycle", () => {
+  test("start() begins polling and registers agent");
+  test("stop() clears timer and marks agent inactive");
+  test("stop() broadcasts agent_leave");
+  test("start() broadcasts agent_join with name and description");
+});
+```
+
+#### Implementation: `extensions/mamoru.ts`
+
+MAMORU is a class that receives all dependencies via constructor:
 
 ```ts
 class Mamoru {
-  // State
-  private db: Database;
-  private sessionId: string;
-  private channel: string;
-  private status: AgentStatus = "available";
-  private roster: Map<string, RosterEntry>;
-  private pollTimer: ReturnType<typeof setInterval> | null;
-  private activeTaskRef: number | null;      // ref_message_id of current task
-  private pendingPings: Map<string, number>; // sessionId → sent timestamp
+  constructor(config: {
+    db: Database;
+    sessionId: string;
+    channel: string;
+    persona: PersonaConfig;
+    pi: ExtensionAPI;           // for sendUserMessage, registerTool
+    ctx: ExtensionContext;      // for abort(), isIdle()
+    roster: Roster;
+    config: MamoruConfig;
+  })
 
-  // Pi integration
-  private pi: ExtensionAPI;
-  private refreshDelegateTaskTool: () => void;
-
-  // Public
-  start(pollIntervalMs: number): void;
-  stop(): void;
-  getStatus(): AgentStatus;
-  getRoster(): RosterEntry[];
-
-  // Internal
-  private poll(): void;
-  private routeMessage(msg: MessageRow): void;
-  private autoRespond(event, fromAgent, refId, content): void;
-  private forwardToLlm(msg: MessageRow, parsedPayload: MessagePayload): void;
-  private handleOutbound(payload: MessagePayload): void;
+  // Task tracking state
+  private activeTaskId: number | null;              // task_id of the task this agent is working on
+  private outboundTasks: Map<number, OutboundTask>; // tasks this agent has delegated (for timeout)
 }
 ```
 
-**Event routing logic** (the core of MAMORU):
+**Key implementation detail — `forwardToLlm` and delivery routing**:
 
-```
-poll() → getUnreadMessages() → for each message:
-  parse payload JSON
-  switch (payload.event):
-    // Auto-handled (no LLM)
-    "ping"       → auto-send "pong", update heartbeat
-    "pong"       → clear pending ping timer
-    "task_ack"   → note (no action)
-    "task_cancel_ack" → set status → available, update tool
-
-    // Auto-handled with conditional logic
-    "task_req":
-      if status === "available":
-        auto-send "task_ack"
-        set status → "busy", update tool
-        store activeTaskRef = msg.message_id
-        forwardToLlm(msg)
-      else:
-        auto-send "task_reject" (reason: "busy")
-
-    "task_cancel":
-      abort current LLM operation (pi.abort())
-      auto-send "task_cancel_ack"
-      set status → "available"
-      activeTaskRef = null, update tool
-
-    // Roster updates
-    "broadcast" (intent=agent_join):
-      update roster, refresh delegate_task
-    "broadcast" (intent=agent_leave):
-      remove from roster, refresh delegate_task
-    "broadcast" (intent=agent_status_change):
-      update roster entry, refresh delegate_task
-    "broadcast" / "info_only" (other):
-      buffer for LLM context
-
-    // Forward to LLM
-    "task_clarify"     → forwardToLlm (LLM composes answer)
-    "task_clarify_res" → forwardToLlm (LLM continues work)
-    "task_reject"      → forwardToLlm (LLM picks another agent)
-    "task_done"        → forwardToLlm (LLM processes result)
-    "task_fail"        → forwardToLlm (LLM handles failure)
-
-  advanceCursor()
-  updateHeartbeat()
-```
-
-**`forwardToLlm` implementation**: Use `pi.sendUserMessage()` with a structured prompt that includes the message context:
-
-```
-[TEAM MESSAGE from "Code Reviewer" (task ref #42)]
-Event: task_done
-Content: Review complete. Found 2 security issues.
-Detail: /tmp/reviews/pr123.md
-
-Respond appropriately. If the task is complete, acknowledge the result.
-If the task failed, decide whether to retry or reassign.
-```
-
-**Outbound handling**: Hook into `tool_result` event for `delegate_task` tool. When the LLM sends a message via the tool, MAMORU intercepts and manages status transitions:
-- `task_done` / `task_fail` → status → `available`
-- `task_update` / `task_clarify` → status stays `busy`
-
-#### 2.2 — Status machine integration
-
-MAMORU updates the `agents` table **and** broadcasts status changes:
+New `task_req` messages (`task_id == message_id`) are auto-handled by MAMORU and never reach `forwardToLlm`. Everything else is always `steer` — if it passed MAMORU's auto-handling, it's relevant to the LLM right now.
 
 ```ts
-private setStatus(newStatus: AgentStatus): void {
-  if (newStatus === this.status) return;
-  this.status = newStatus;
-  updateAgentStatus(this.db, this.sessionId, newStatus);
+private forwardToLlm(msg: MessageRow, payload: MessagePayload): void {
+  const fromName = this.getAgentName(msg.from_agent);
+  const structured = [
+    `[TEAM MESSAGE from "${fromName}" | event: ${payload.event} | task: #${msg.task_id ?? "none"} | ref: #${msg.ref_message_id ?? "none"}]`,
+    payload.content,
+    payload.detail ? `Detail file: ${payload.detail}` : null,
+  ].filter(Boolean).join("\n");
 
-  // Broadcast to teammates
-  sendMessage(this.db, {
-    from_agent: this.sessionId,
-    to_agent: null,
-    channel: this.channel,
-    ref_message_id: null,
-    payload: JSON.stringify({
-      event: "broadcast",
-      intent: "agent_status_change",
-      need_reply: false,
-      content: `${this.agentName} is now ${newStatus}`,
-      detail: null
-    }),
-    created_at: Date.now()
-  });
-
-  this.refreshDelegateTaskTool();
+  this.pi.sendUserMessage(structured, { deliverAs: "steer" });
 }
 ```
 
-**Deliverable**: MAMORU polls, routes events, auto-responds to ping/task_req/task_cancel, forwards task work to LLM. Status transitions work correctly. `talk-prompt-handler.ts` is deleted.
+**Deliverable**: `bun test tests/mamoru.test.ts` — all green. MAMORU routes all events correctly.
 
 ---
 
-### Phase 3: Roster + `delegate_task` Tool
+### Phase 4: Roster + Tools
 
-**Goal**: Dynamic teammate discovery and task delegation.
+**Goal**: Dynamic teammate discovery, `delegate_task` and `send_message` tools.
 
-#### 3.1 — `extensions/roster.ts`
-
-In-memory roster management:
+#### Test Spec: `tests/roster.test.ts`
 
 ```ts
-class Roster {
-  private entries: Map<string, RosterEntry>;  // keyed by session_id
+describe("Roster", () => {
+  test("initFromDb populates roster from agents table");
+  test("initFromDb excludes self from roster");
+  test("update adds a new entry");
+  test("update overwrites existing entry for same session_id");
+  test("remove deletes entry by session_id");
+  test("markInactive sets status to inactive");
+  test("getAll returns all entries");
+  test("getAvailable returns only available entries");
 
-  update(entry: RosterEntry): void;
-  remove(sessionId: string): void;
-  markInactive(sessionId: string): void;
-  getAll(): RosterEntry[];
-  getAvailable(): RosterEntry[];
-  buildToolDescription(selfSessionId: string): string;
-
-  // Initialize from DB on startup (catch up with existing agents)
-  initFromDb(db: Database, selfSessionId: string): void;
-}
+  describe("buildToolDescription", () => {
+    test("lists all teammates with name, session_id, status, description");
+    test("excludes self from listing");
+    test("shows 'No teammates are currently online' when roster is empty");
+    test("marks busy agents as busy");
+    test("marks inactive agents as inactive");
+    test("updates description when roster changes");
+  });
+});
 ```
 
-`buildToolDescription()` generates the dynamic tool description string:
+#### Test Spec: `tests/tools.test.ts`
 
 ```ts
-buildToolDescription(selfSessionId: string): string {
-  const others = this.getAll().filter(e => e.session_id !== selfSessionId);
-  if (others.length === 0) {
-    return "Assign a task to a teammate. No teammates are currently online.";
-  }
+describe("delegate_task tool", () => {
+  test("inserts task_req message into DB");
+  test("sets from_agent to own session_id");
+  test("sets to_agent to target session_id");
+  test("sets task_id equal to the new message_id (self-referencing)");
+  test("sets ref_message_id to NULL for new task");
+  test("payload has event=task_req, need_reply=true");
+  test("returns message_id (= task_id) in result for correlation");
+  test("rejects if target agent not in roster");
+  test("rejects if task content exceeds 500 chars");
+  test("sets intent from optional intent parameter");
+  test("sets detail from optional detail parameter");
+});
 
-  const lines = others.map(e =>
-    `  - "${e.agent_name}" (session: ${e.session_id}) — ${e.status} — ${e.description}`
-  );
-
-  return [
-    "Assign a task to a teammate.",
-    "",
-    "Available teammates:",
-    ...lines,
-    "",
-    "Pick an 'available' agent whose description matches the task.",
-    "If no suitable agent is available, report that to the user."
-  ].join("\n");
-}
+describe("send_message tool", () => {
+  test("inserts message with specified event type into DB");
+  test("validates event is a known MessageEvent");
+  test("sets task_id from parameter for task-related events");
+  test("sets ref_message_id for task-related events");
+  test("requires task_id for task_done, task_fail, task_update, task_clarify");
+  test("requires ref_message_id for task_done, task_fail, task_update");
+  test("MAMORU intercepts outbound task_done and sets status to available");
+  test("MAMORU intercepts outbound task_fail and sets status to available");
+  test("MAMORU does not change status for task_update");
+  test("allows broadcast (to_agent omitted, to_agent=null)");
+  test("validates content <= 500 chars");
+});
 ```
 
-#### 3.2 — `extensions/tools/delegate-task.ts`
+#### Implementation: `extensions/roster.ts`
 
-The `delegate_task` tool definition:
+Pure in-memory Map with description builder.
+
+#### Implementation: `extensions/tools/delegate-task.ts`
 
 ```ts
 parameters: Type.Object({
@@ -388,194 +574,313 @@ parameters: Type.Object({
 })
 ```
 
-**execute()** implementation:
-1. Validate target exists in roster
-2. Insert `task_req` message into DB with `ref_message_id: null` (this IS the originating message)
-3. Return the `message_id` to the LLM so it can correlate future responses
-4. MAMORU on the recipient side handles the rest
+The tool's `description` is **dynamically rewritten** by MAMORU whenever roster changes, via `pi.registerTool()` re-registration.
 
-**Dynamic re-registration**: When roster changes, MAMORU calls `pi.registerTool()` again with the updated description. Pi's extension API allows re-registering a tool with the same name — the new definition replaces the old one.
+#### Implementation: `extensions/tools/send-message.ts`
 
-#### 3.3 — Roster initialization on join
+This is the general-purpose outbound tool for the LLM. Used for:
+- `task_done` / `task_fail` (completing a task)
+- `task_update` (progress report)
+- `task_clarify` (asking requester for info)
+- `broadcast` / `info_only` (announcements)
+- Any other event the LLM needs to send
 
-When an agent registers on a channel:
-1. Read all existing agents from `agents` table → populate roster
-2. Broadcast `agent_join` with own name + description
-3. Register `delegate_task` tool with current roster description
+```ts
+parameters: Type.Object({
+  to: Type.Optional(Type.String({ description: "session_id of recipient. Omit for broadcast." })),
+  event: Type.String({ description: "Message event type (task_done, task_update, broadcast, etc.)" }),
+  task_id: Type.Optional(Type.Number({ description: "The originating task_req's message_id. Required for all task-related events." })),
+  ref_message_id: Type.Optional(Type.Number({ description: "The specific message this replies to. Usually same as task_id." })),
+  content: Type.String({ description: "Message content (max 500 chars)" }),
+  detail: Type.Optional(Type.String({ description: "Absolute file path with detailed content" })),
+  intent: Type.Optional(Type.String({ description: "Freeform intent hint" })),
+})
+```
 
-**Deliverable**: Agents discover each other automatically. LLM sees live teammate status in `delegate_task` tool. Task routing works.
+MAMORU hooks the `tool_result` event for `send_message` to manage status transitions:
+- If event is `task_done` or `task_fail` → set status → `available`, clear `activeTaskId`, broadcast `agent_status_change`
+- If event is `task_update` or `task_clarify` → no status change
+
+**Why two tools?** `delegate_task` = **start** a task (outbound `task_req`). `send_message` = **everything else** (replies, updates, broadcasts). The LLM sees `delegate_task` with a live roster in the description — it's optimized for "who should I assign this to?" `send_message` is for ongoing communication once a task is in flight.
+
+**Deliverable**: `bun test tests/roster.test.ts tests/tools.test.ts` — all green.
 
 ---
 
-### Phase 4: Task Lifecycle + Timeout
+### Phase 5: Task Timeout
 
-**Goal**: Full task_req → task_done flow with timeout protection.
+**Goal**: Configurable timeout with reset on worker events.
 
-#### 4.1 — Task state tracking in MAMORU
+#### Test Spec: `tests/timeout.test.ts`
 
 ```ts
-// Requester side — tracks tasks this agent has delegated
-private outboundTasks: Map<number, {  // keyed by message_id of task_req
+describe("task timeout", () => {
+  // Use bun's fake timer support
+  test("starts timeout timer when task_req is sent via delegate_task");
+  test("timer duration matches config.taskTimeoutMinutes");
+  test("timer resets on task_update from worker");
+  test("timer resets on task_clarify from worker");
+  test("timer resets on any message with matching ref_message_id");
+  test("sends task_cancel with intent=task_timeout when timer expires");
+  test("waits pingTimeoutSeconds for task_cancel_ack after timeout");
+  test("marks worker inactive if no task_cancel_ack received");
+  test("forwards timeout notification to LLM for reassignment");
+  test("clears timeout timer when task_done received");
+  test("clears timeout timer when task_fail received");
+  test("clears timeout timer when task_cancel_ack received");
+  test("handles multiple outbound tasks with independent timers");
+});
+```
+
+#### Implementation
+
+Timeout logic lives in MAMORU as `outboundTasks` tracking (requester side):
+
+```ts
+private outboundTasks: Map<number, {  // keyed by task_id
   workerSessionId: string;
   sentAt: number;
   lastEventAt: number;
   timeoutTimer: ReturnType<typeof setTimeout>;
 }>;
-
-// Worker side — tracks the single active task
-private activeTask: {
-  refMessageId: number;
-  requesterSessionId: string;
-  startedAt: number;
-} | null;
 ```
 
-#### 4.2 — Timeout implementation
+**Deliverable**: `bun test tests/timeout.test.ts` — all green.
 
-On the **requester side**, when `task_req` is sent:
+---
 
-```ts
-private startTaskTimeout(messageId: number, workerSessionId: string): void {
-  const timeoutMs = this.config.taskTimeoutMinutes * 60 * 1000;
+### Phase 6: TUI Widget + Popup Overlay
 
-  const timer = setTimeout(() => {
-    // Send task_cancel with intent "task_timeout"
-    sendMessage(this.db, {
-      from_agent: this.sessionId,
-      to_agent: workerSessionId,
-      channel: this.channel,
-      ref_message_id: messageId,
-      payload: JSON.stringify({
-        event: "task_cancel",
-        intent: "task_timeout",
-        need_reply: true,
-        content: `Task timed out after ${this.config.taskTimeoutMinutes} minutes with no updates.`,
-        detail: null
-      }),
-      created_at: Date.now()
-    });
+**Goal**: Rich terminal UI showing team status and task tracking. Pattern follows `pi-subagent-in-memory`.
 
-    // Start 20s grace period for task_cancel_ack
-    setTimeout(() => {
-      if (this.outboundTasks.has(messageId)) {
-        // No ack received — mark worker inactive
-        this.roster.markInactive(workerSessionId);
-        this.refreshDelegateTaskTool();
-        // Forward timeout to LLM for reassignment
-        this.forwardTimeoutToLlm(messageId, workerSessionId);
-      }
-    }, this.config.pingTimeoutSeconds * 1000);
-  }, timeoutMs);
+#### No automated tests — manually tested in REPL.
 
-  this.outboundTasks.set(messageId, {
-    workerSessionId,
-    sentAt: Date.now(),
-    lastEventAt: Date.now(),
-    timeoutTimer: timer
-  });
-}
+#### 6.1 — `extensions/tui/teammate-widget.ts`
+
+The main widget renders **two cards** side by side:
+
+```
+┌─ team: project-alpha ──── #1 ┐  ┌─ tasks ──────────────── #2 ┐
+│ ● You (Code Reviewer)        │  │ → task #42: Review PR #123  │
+│   available                  │  │   assigned to: Developer 1   │
+│ ○ Developer 1 — busy         │  │   status: busy  ⏱ 3m 42s    │
+│ ○ Developer 2 — available    │  │ ✅ task #38: Fix login bug   │
+│ ○ Tester — available         │  │   done by: Developer 2       │
+│ show more: Ctrl+1            │  │ show more: Ctrl+2            │
+└──────────────────────────────┘  └──────────────────────────────┘
 ```
 
-**Timer reset**: When requester's MAMORU receives any message with matching `ref_message_id` (`task_update`, `task_clarify`, etc.), reset the timer:
+**Card 1 — Team Roster** (widget key: `teammate-roster`):
+- Title: `team: {channelName}`
+- Badge: `#1`
+- Shows self (highlighted) + up to 4 teammates with status
+- If >5 agents: footer shows "show more: Ctrl+1"
+- Each entry: `● name — status` (● for available, ○ for busy, ✖ for inactive)
 
+**Card 2 — Task Tracker** (widget key: `teammate-tasks`):
+- Title: `tasks`
+- Badge: `#2`
+- Shows up to 4 active/recent tasks with:
+  - Task ref ID + first ~30 chars of content
+  - Who it's assigned to
+  - Status (busy/done/failed) + **elapsed timer** (live, updated every 500ms)
+- If >4 tasks: footer shows "show more: Ctrl+2"
+
+**Implementation pattern**: Follow `SubagentCardsWidget` from `pi-subagent-in-memory`:
+- Component class with `render(width): string[]` and `dispose()`
+- Use `renderCard()` helper from a shared `tui-draw.ts`
+- Animation timer (500ms) for live elapsed counters
+- `requestRender()` on TUI to trigger redraws
+
+Both cards are rendered by a single widget component registered via:
 ```ts
-private resetTaskTimeout(refMessageId: number): void {
-  const task = this.outboundTasks.get(refMessageId);
-  if (!task) return;
-  clearTimeout(task.timeoutTimer);
-  task.lastEventAt = Date.now();
-  this.startTaskTimeout(refMessageId, task.workerSessionId);
-}
+ctx.ui.setWidget("teammate", (tui, theme) => new TeammateWidget(tui, theme, mamoru), { placement: "aboveEditor" });
 ```
 
-#### 4.3 — LLM system prompt injection
+#### 6.2 — `extensions/tui/detail-overlay.ts`
 
-Use `before_agent_start` event to inject task context into the system prompt when the LLM is handling a forwarded message:
+Popup overlay triggered by **Ctrl+1** (roster) and **Ctrl+2** (tasks). Pattern follows `SubagentDetailOverlay`:
 
 ```ts
-pi.on("before_agent_start", async (event, ctx) => {
-  const persona = mamoru.getPersona();
-  const activeTask = mamoru.getActiveTask();
-
-  let additions = "";
-
-  // Always inject persona
-  if (persona) {
-    additions += `\n\nYou are ${persona.name}. ${persona.description}`;
+// Register shortcuts
+pi.registerShortcut(Key.ctrl("1"), {
+  description: "Show full team roster",
+  handler: async (ctx) => {
+    await ctx.ui.custom<void>(
+      (tui, theme, _kb, done) => new RosterDetailOverlay(mamoru.getRoster(), theme, done),
+      { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } }
+    );
   }
+});
 
-  // Inject active task context if working on something
-  if (activeTask) {
-    additions += `\n\nYou are currently working on a task (ref #${activeTask.refMessageId}) `;
-    additions += `requested by agent "${activeTask.requesterName}". `;
-    additions += `When done, use delegate_task or send_message to report back with task_done or task_fail.`;
-    additions += `\nSend periodic task_update messages to prevent timeout.`;
-  }
-
-  if (additions) {
-    return { systemPrompt: event.systemPrompt + additions };
+pi.registerShortcut(Key.ctrl("2"), {
+  description: "Show full task list",
+  handler: async (ctx) => {
+    await ctx.ui.custom<void>(
+      (tui, theme, _kb, done) => new TaskDetailOverlay(mamoru.getOutboundTasks(), theme, done),
+      { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } }
+    );
   }
 });
 ```
 
-**Deliverable**: Full task lifecycle works end-to-end. Timeouts fire correctly. LLM has task context in every turn.
+**Roster overlay** shows all agents with full descriptions.
+**Task overlay** shows all tasks (active + completed) with full content, detail paths, timestamps, and elapsed timers.
+
+Both implement `Focusable` interface and close on Escape/Enter/same-shortcut.
+
+**Deliverable**: Widget renders live in REPL. Ctrl+1/Ctrl+2 popups work.
 
 ---
 
-### Phase 5: Commands + UX Polish
+### Phase 7: Commands + Wiring
 
-**Goal**: Clean up slash commands, add TUI widget, production polish.
+**Goal**: Clean up slash commands, wire everything together in `index.ts`.
 
-#### 5.1 — `extensions/commands.ts`
+#### 7.1 — `extensions/commands.ts`
 
-Refactor slash commands from current `index.ts`. Rename for consistency:
+| Command | Description |
+|---------|-------------|
+| `/team-create [name]` | Create a new channel DB |
+| `/team-join <channel> [agentName]` | Join a channel, start MAMORU, broadcast `agent_join` |
+| `/team-leave` | Broadcast `agent_leave`, stop MAMORU, mark agent inactive |
+| `/team-send <to> <message>` | Send a manual message (debugging/testing) |
+| `/team-status` | Show current status, channel, active task |
+| `/team-roster` | Print all agents on the channel |
+| `/team-history [n]` | Show last N messages (default 20) |
 
-| Old Command | New Command | Description |
-|-------------|-------------|-------------|
-| `/agent-talk-build` | `/team-create` | Create a new channel DB |
-| `/agent-talk-register` | `/team-join` | Join a channel, start MAMORU |
-| _(new)_ | `/team-leave` | Leave channel, broadcast `agent_leave`, stop MAMORU |
-| `/agent-talk-to` | `/team-send` | Send a manual message (for debugging/testing) |
-| _(new)_ | `/team-status` | Show current status, roster, active task |
-| _(new)_ | `/team-roster` | Show all agents on the channel with status |
-| _(new)_ | `/team-history` | Show recent messages (last N) |
+#### 7.2 — `extensions/index.ts`
 
-#### 5.2 — TUI Widget
+The entry point wires everything:
 
-Replace the simple single-line widget with a richer display:
+```ts
+export default function(pi: ExtensionAPI) {
+  let mamoru: Mamoru | null = null;
 
+  // Load persona on session start
+  pi.on("session_start", async (_event, ctx) => {
+    const persona = loadPersona(ctx.cwd);
+    if (persona) {
+      console.log(`[teammate] Loaded persona: ${persona.name}`);
+    }
+  });
+
+  // Inject persona + task context into system prompt
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (!mamoru) return;
+    return mamoru.buildSystemPromptAdditions(event.systemPrompt);
+  });
+
+  // Register commands
+  registerCommands(pi, () => mamoru);
+
+  // Register shortcuts for overlay popups
+  registerShortcuts(pi, () => mamoru);
+
+  // Cleanup
+  pi.on("session_shutdown", async () => {
+    mamoru?.stop();
+  });
+}
 ```
-┌─ team: project-alpha ─────────────────────────┐
-│ ● Code Reviewer (you) — available              │
-│ ○ Developer 1 — busy (task #42)                │
-│ ○ Tester — available                           │
-│ Last: task_done from Developer 1 (2s ago)      │
-└────────────────────────────────────────────────┘
+
+#### 7.3 — `extensions/talk-prompt-handler.ts` (adapted)
+
+The fun chat mode is refactored to work with the new framework:
+
+- Listens for `pi_talk_message` custom events (emitted by MAMORU when forwarding to LLM is needed)
+- Instead of blindly forwarding every message, it now **only activates when MAMORU is not running** (standalone chat mode vs. team mode)
+- When MAMORU is active, it handles LLM forwarding — `talk-prompt-handler` stays out of the way
+- When MAMORU is NOT active (e.g., agent registered on channel but not in team mode), `talk-prompt-handler` provides the simple 2-agent chat experience
+
+```ts
+export default function(pi: ExtensionAPI) {
+  let mamoruActive = false;
+
+  // MAMORU sets this flag when it starts/stops
+  pi.events.on("mamoru_started", () => { mamoruActive = true; });
+  pi.events.on("mamoru_stopped", () => { mamoruActive = false; });
+
+  pi.events.on("pi_talk_message", (data: unknown) => {
+    if (mamoruActive) return; // MAMORU handles it
+
+    // Original fun chat behavior: parse message, inject as user prompt, auto-reply
+    const row = data as TalkMessageEvent;
+    // ... (existing logic, adapted to new payload schema)
+  });
+}
 ```
 
-Use `ctx.ui.setWidget()` with component factory for rich rendering (pi supports this via the `(tui, theme) => Component` overload).
-
-#### 5.3 — Cleanup
-
-- Delete `extensions/talk-prompt-handler.ts`
-- Remove it from `package.json` `pi.extensions` array
-- Update `package.json` dependencies (add `yaml` if needed for persona parsing)
-- Add `mamoru.ts` and other new files aren't direct extension entry points — only `index.ts` is registered in `pi.extensions`
-
-**Deliverable**: Clean UX. All commands work. Widget shows live team status.
+**Deliverable**: Full working system. All commands, widgets, tools, MAMORU wired together.
 
 ---
 
-### Phase 6: Integration with `pi-file-permissions`
+### Phase 8: Integration Tests
 
-**Goal**: Ensure persona-based agents work seamlessly with file permission boundaries.
+**Goal**: End-to-end multi-agent flows without a real LLM.
 
-This phase is about **documentation and convention**, not code in this extension:
+#### Test Spec: `tests/integration.test.ts`
 
-1. Document that each agent's workspace should have both `persona.yaml` (identity) and `file-permissions.yaml` (boundaries)
-2. Optionally: MAMORU could read `file-permissions.yaml` domains and include a summary in the `agent_join` broadcast, so teammates know what files each agent can access. (Nice-to-have, not required for v1.)
+```ts
+describe("multi-agent integration", () => {
+  // Each test creates 2-3 mock agents sharing one in-memory DB
 
-**Deliverable**: Documentation + optional cross-extension awareness.
+  describe("agent discovery", () => {
+    test("agent A joins, agent B joins, both see each other in roster");
+    test("agent C joins late and sees A and B in roster");
+    test("agent A leaves, B and C see A removed from roster");
+  });
+
+  describe("task delegation flow", () => {
+    test("A sends task_req to B, B auto-acks, B's status becomes busy");
+    test("task_ack has matching task_id");
+    test("B sends task_done, B's status becomes available, A receives result");
+    test("A sends task_req to B (busy), B auto-rejects");
+  });
+
+  describe("task clarification flow", () => {
+    test("A sends task_req, B sends task_clarify, A sends task_clarify_res, B sends task_done");
+    test("all messages in the flow share the same task_id");
+    test("task_clarify_res ref_message_id points to the task_clarify message");
+  });
+
+  describe("sub-delegation flow", () => {
+    test("B delegates #78 to C while busy on #42 — #78 has task_id=78 (task_id == message_id)");
+    test("C's task_done for #78 is delivered to B as steer");
+    test("B processes C's result and completes #42");
+  });
+
+  describe("task cancellation flow", () => {
+    test("A sends task_cancel, B auto-acks, B status becomes available");
+    test("B's activeTaskId is cleared");
+  });
+
+  describe("timeout flow", () => {
+    test("A sends task_req, no response for taskTimeoutMinutes, A sends task_cancel");
+    test("task_update from B resets the timeout timer");
+  });
+
+  describe("heartbeat/liveness", () => {
+    test("A pings B, B auto-pongs");
+    test("A pings C (no response), A marks C inactive after pingTimeoutSeconds");
+  });
+});
+```
+
+These tests simulate multiple MAMORU instances sharing one `:memory:` SQLite DB, with mock `pi.sendUserMessage` to capture LLM-forwarded messages.
+
+**Deliverable**: `bun test` — all tests green.
+
+---
+
+### Phase 9: Integration with `pi-file-permissions`
+
+**Goal**: Documentation and convention. No code changes.
+
+- Document that each agent's workspace should have both `persona.yaml` and `file-permissions.yaml`
+- Optional: MAMORU reads `file-permissions.yaml` domains and includes a summary in the `agent_join` broadcast
+
+**Deliverable**: Documentation.
 
 ---
 
@@ -584,14 +889,17 @@ This phase is about **documentation and convention**, not code in this extension
 ```jsonc
 // package.json updates
 {
+  "name": "pi-teammate",
   "dependencies": {
     "better-sqlite3": "^12.8.0",
-    "yaml": "^2.7.0"           // for persona.yaml parsing
+    "yaml": "^2.7.0"
+  },
+  "scripts": {
+    "test": "bun test",
+    "test:watch": "bun test --watch"
   }
 }
 ```
-
-No other new dependencies needed. `@sinclair/typebox` is already a peer dep.
 
 ---
 
@@ -605,34 +913,19 @@ This is a **pre-release** extension. No backward compatibility with the current 
 
 ---
 
-## Testing Strategy
+## Phase Summary
 
-Each phase should be testable independently:
+| Phase | What | Size | Tests |
+|-------|------|------|-------|
+| **0 — Test Infra + Types** | Types, mock harness, test spec stubs | Small | Spec only |
+| **1 — Foundation** | Schema, DB layer | Small | `schema.test.ts`, `db.test.ts` |
+| **2 — Persona** | persona.yaml loader | Small | `persona.test.ts` |
+| **3 — MAMORU Core** | Poll loop, event router, auto-responses, status machine, LLM forwarding | **Large** | `mamoru.test.ts` |
+| **4 — Roster + Tools** | In-memory roster, `delegate_task`, `send_message` | Medium | `roster.test.ts`, `tools.test.ts` |
+| **5 — Timeout** | Task timeout tracking, timer reset, cancellation | Medium | `timeout.test.ts` |
+| **6 — TUI Widget** | Cards widget, popup overlays | Medium | Manual |
+| **7 — Commands + Wiring** | Slash commands, `index.ts` wiring, `talk-prompt-handler` adaptation | Medium | Manual |
+| **8 — Integration Tests** | Multi-agent end-to-end flows | Medium | `integration.test.ts` |
+| **9 — File Permissions** | Documentation | Small | N/A |
 
-| Phase | How to Test |
-|-------|-------------|
-| 1 — Foundation | `/team-create` + `/team-join` work, DB has correct schema, persona loads |
-| 2 — MAMORU | Two agents on same channel: ping/pong works, task_req auto-acks, status changes visible in DB |
-| 3 — Roster | Agent join → other agent's `delegate_task` tool description updates. Agent leave → removed. |
-| 4 — Task Lifecycle | Full flow: delegate_task → task_ack → LLM works → task_done. Timeout fires after 20min (test with short timeout). |
-| 5 — Commands + UX | All slash commands work, widget displays correctly. |
-| 6 — File Permissions | Agent with `file-permissions.yaml` is correctly restricted while doing delegated tasks. |
-
-**Manual testing setup**: Open 2-3 terminals, each running `pi` with a different `persona.yaml` in different directories, all joined to the same channel.
-
----
-
-## Estimated Effort
-
-| Phase | Scope | Estimate |
-|-------|-------|----------|
-| 1 — Foundation | Types, schema, DB layer, persona loader | Small |
-| 2 — MAMORU Core | Poll loop, event router, auto-responses, status machine, LLM forwarding | **Large** (core of the system) |
-| 3 — Roster + Tool | In-memory roster, dynamic delegate_task, join/leave broadcasts | Medium |
-| 4 — Task Lifecycle | Timeout tracking, task state, system prompt injection | Medium |
-| 5 — Commands + UX | Slash commands, TUI widget, cleanup | Small |
-| 6 — File Permissions | Documentation, optional cross-extension awareness | Small |
-
-**Recommended order**: 1 → 2 → 3 → 4 → 5 → 6 (strictly sequential — each phase depends on the previous).
-
-Phase 2 is the critical path. Get MAMORU right and everything else follows.
+**Recommended order**: Strictly sequential. Each phase depends on the previous. Phase 3 (MAMORU) is the critical path — get it right and everything else follows.
