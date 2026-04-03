@@ -292,11 +292,11 @@ export class Mamoru {
           payload.intent !== "agent_join" && payload.intent !== "agent_leave" && payload.intent !== "agent_status_change");
         if (payload.intent === "agent_join") {
           const agent = getAgentBySession(this.db, msg.from_agent);
-          if (agent && agent.description) {
+          if (agent) {
             this.roster.update({
               session_id: agent.session_id,
               agent_name: agent.agent_name,
-              description: agent.description,
+              description: agent.description ?? "(no description)",
               status: agent.status as AgentStatus,
               last_heartbeat: agent.last_heartbeat ?? Date.now(),
             });
