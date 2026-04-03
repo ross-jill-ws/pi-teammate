@@ -1,5 +1,10 @@
+/**
+ * Legacy talk-prompt-handler — handles direct "prompt" style messages
+ * when MAMORU is NOT active (backward compatibility with the old pi_talk_message flow).
+ *
+ * When MAMORU IS active, this handler does nothing — MAMORU handles all routing.
+ */
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import Database from "better-sqlite3";
 
 interface TalkMessageEvent {
   message_id: number;
@@ -43,8 +48,21 @@ function extractLatestAssistantReply(messages: unknown[]): string {
 
 export default function (pi: ExtensionAPI) {
   let pendingReply: PendingReply | null = null;
+  let mamoruActive = false;
+
+  // Track MAMORU lifecycle — when active, this handler is dormant
+  pi.events.on("mamoru_started", () => {
+    mamoruActive = true;
+  });
+
+  pi.events.on("mamoru_stopped", () => {
+    mamoruActive = false;
+  });
 
   pi.events.on("pi_talk_message", (data: unknown) => {
+    // When MAMORU is active, it handles all message routing
+    if (mamoruActive) return;
+
     const row = data as TalkMessageEvent;
     if (row.type !== "prompt") return;
 
@@ -71,6 +89,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event) => {
+    // Only inject reply-mode prompt when MAMORU is NOT active
+    if (mamoruActive) return;
     if (!pendingReply) return;
 
     return {
@@ -84,17 +104,18 @@ export default function (pi: ExtensionAPI) {
         `2) sound like a normal person in conversation, ` +
         `3) keep it concise unless detail is genuinely needed, ` +
         `4) if helpful, end with one natural follow-up question to keep the conversation going, ` +
-        `5) do not include analysis, tool chatter, file paths, markdown framing, or labels like "Reply:".`
+        `5) do not include analysis, tool chatter, file paths, markdown framing, or labels like "Reply:".`,
     };
   });
 
   pi.on("agent_end", async (event, ctx) => {
+    // Only auto-reply when MAMORU is NOT active
+    if (mamoruActive) return;
     if (!pendingReply) return;
 
     const reply = pendingReply;
     pendingReply = null;
 
-    // Send only the latest assistant reply, not every assistant message from the run.
     const messages = event.messages ?? [];
 
     ctx.ui.setStatus("teammate-reply", `agent_end: ${messages.length} messages`);
@@ -110,6 +131,7 @@ export default function (pi: ExtensionAPI) {
 
     // Insert reply message into the channel DB
     try {
+      const Database = (await import("better-sqlite3")).default;
       const db = new Database(reply.dbPath);
       db.pragma("journal_mode = WAL");
       db.pragma("foreign_keys = OFF");
@@ -117,7 +139,7 @@ export default function (pi: ExtensionAPI) {
       const now = Date.now();
       db.prepare(
         `INSERT INTO messages (from_agent, to_agent, channel, type, payload, created_at, updated_at)
-         VALUES (?, ?, ?, 'prompt', ?, ?, ?)`
+         VALUES (?, ?, ?, 'prompt', ?, ?, ?)`,
       ).run(
         reply.selfSessionId,
         reply.fromAgent,
