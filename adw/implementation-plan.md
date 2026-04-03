@@ -666,7 +666,7 @@ The main widget renders **two cards** side by side:
 │ ○ Developer 1 — busy         │  │   status: busy  ⏱ 3m 42s    │
 │ ○ Developer 2 — available    │  │ ✅ task #38: Fix login bug   │
 │ ○ Tester — available         │  │   done by: Developer 2       │
-│ show more: Ctrl+1            │  │ show more: Ctrl+2            │
+│ show more: Ctrl+Alt+1        │  │ show more: Ctrl+Alt+2        │
 └──────────────────────────────┘  └──────────────────────────────┘
 ```
 
@@ -674,7 +674,7 @@ The main widget renders **two cards** side by side:
 - Title: `team: {channelName}`
 - Badge: `#1`
 - Shows self (highlighted) + up to 4 teammates with status
-- If >5 agents: footer shows "show more: Ctrl+1"
+- If >5 agents: footer shows "show more: Ctrl+Alt+1"
 - Each entry: `● name — status` (● for available, ○ for busy, ✖ for inactive)
 
 **Card 2 — Task Tracker** (widget key: `teammate-tasks`):
@@ -684,7 +684,7 @@ The main widget renders **two cards** side by side:
   - Task ref ID + first ~30 chars of content
   - Who it's assigned to
   - Status (busy/done/failed) + **elapsed timer** (live, updated every 500ms)
-- If >4 tasks: footer shows "show more: Ctrl+2"
+- If >4 tasks: footer shows "show more: Ctrl+Alt+2"
 
 **Implementation pattern**: Follow `SubagentCardsWidget` from `pi-subagent-in-memory`:
 - Component class with `render(width): string[]` and `dispose()`
@@ -699,11 +699,11 @@ ctx.ui.setWidget("teammate", (tui, theme) => new TeammateWidget(tui, theme, mamo
 
 #### 6.2 — `extensions/tui/detail-overlay.ts`
 
-Popup overlay triggered by **Ctrl+1** (roster) and **Ctrl+2** (tasks). Pattern follows `SubagentDetailOverlay`:
+Popup overlay triggered by **Ctrl+Alt+1** (roster) and **Ctrl+Alt+2** (tasks). Pattern follows `SubagentDetailOverlay`:
 
 ```ts
 // Register shortcuts
-pi.registerShortcut(Key.ctrl("1"), {
+pi.registerShortcut(Key.ctrlAlt("1"), {
   description: "Show full team roster",
   handler: async (ctx) => {
     await ctx.ui.custom<void>(
@@ -713,7 +713,7 @@ pi.registerShortcut(Key.ctrl("1"), {
   }
 });
 
-pi.registerShortcut(Key.ctrl("2"), {
+pi.registerShortcut(Key.ctrlAlt("2"), {
   description: "Show full task list",
   handler: async (ctx) => {
     await ctx.ui.custom<void>(
@@ -729,7 +729,7 @@ pi.registerShortcut(Key.ctrl("2"), {
 
 Both implement `Focusable` interface and close on Escape/Enter/same-shortcut.
 
-**Deliverable**: Widget renders live in REPL. Ctrl+1/Ctrl+2 popups work.
+**Deliverable**: Widget renders live in REPL. Ctrl+Alt+1/Ctrl+Alt+2 popups work.
 
 ---
 
@@ -1063,7 +1063,7 @@ export interface MamoruEventLog {
 
 Every `processMessage` branch logs a `recv` entry. Every `autoReply` logs a `sent` entry. The `delegate_task` and `send_message` tools call `mamoru.logOutbound()` to log their sent events.
 
-#### 10.2 — `/mamoru` Command + Ctrl+3 Shortcut
+#### 10.2 — `/mamoru` Command + Ctrl+Alt+3 Shortcut
 
 Registered in `commands.ts`. Opens the overlay:
 
@@ -1082,7 +1082,9 @@ pi.registerCommand("mamoru", {
 });
 ```
 
-Also registered as Ctrl+3 shortcut for quick access.
+Also registered as Ctrl+Alt+3 shortcut for quick access. Uses `nonCapturing: true` so the user can type in the editor while the overlay is visible. Ctrl+Alt+3 cycles: show (non-capturing) → focus (scrollable) → close. Esc from focused state unfocuses back to editor.
+
+All pi-teammate shortcuts use Ctrl+Alt+N to avoid conflicts with `pi-subagent-in-memory` which uses Ctrl+N.
 
 #### 10.3 — `extensions/tui/mamoru-overlay.ts`
 
