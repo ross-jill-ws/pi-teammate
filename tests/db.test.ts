@@ -384,6 +384,41 @@ describe("initCursor", () => {
 
     expect(cursor.last_read_id).toBe(42);
   });
+
+  test("skips to max message_id when channel has existing messages", () => {
+    const db = createTestDb();
+    registerAgent(db, { session_id: "s1", agent_name: "alice", description: null, provider: null, model: null, cwd: null });
+    registerAgent(db, { session_id: "s2", agent_name: "bob", description: null, provider: null, model: null, cwd: null });
+
+    // Bob sends messages BEFORE alice joins
+    sendMessage(db, {
+      from_agent: "s2", to_agent: null, channel: "general",
+      task_id: null, ref_message_id: null,
+      payload: makePayload("old message 1"),
+    });
+    sendMessage(db, {
+      from_agent: "s2", to_agent: null, channel: "general",
+      task_id: null, ref_message_id: null,
+      payload: makePayload("old message 2"),
+    });
+
+    // Now alice joins — cursor should skip past existing messages
+    initCursor(db, "s1", "general");
+
+    const unread = getUnreadMessages(db, "s1", "general");
+    expect(unread.length).toBe(0); // should NOT see old messages
+
+    // New message after join should be visible
+    sendMessage(db, {
+      from_agent: "s2", to_agent: null, channel: "general",
+      task_id: null, ref_message_id: null,
+      payload: makePayload("new message after join"),
+    });
+
+    const unread2 = getUnreadMessages(db, "s1", "general");
+    expect(unread2.length).toBe(1);
+    expect(unread2[0].payload).toContain("new message after join");
+  });
 });
 
 describe("advanceCursor", () => {

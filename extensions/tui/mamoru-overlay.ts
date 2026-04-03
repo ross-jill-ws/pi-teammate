@@ -263,12 +263,10 @@ export class MamoruOverlay implements Focusable {
       }
     }
 
-    // Calculate viewport
-    // Terminal height minus header (4 lines) and footer (1 line)
-    // We don't know terminal height, but render() gets width. We'll use a reasonable max.
-    // The overlay maxHeight is set to 100%, so we get full height. We render enough
-    // lines to fill the terminal, and the TUI clips the rest.
-    const viewportHeight = Math.max(5, 50); // generous default; TUI clips to actual terminal
+    // Calculate viewport from actual terminal height
+    const termRows = this.tui?.terminal?.rows ?? 50;
+    const headerFooterLines = 5; // 4 header + 1 footer
+    const viewportHeight = Math.max(5, termRows - headerFooterLines);
     const totalContent = allContentLines.length;
 
     // Clamp scroll offset

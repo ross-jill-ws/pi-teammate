@@ -36,6 +36,11 @@ export function createDelegateTaskTool(opts: {
       const db = opts.getDb();
       if (!mamoru || !db) throw new Error("Not connected to a team. Use /team-join first.");
 
+      // Prevent self-delegation
+      if (params.to === mamoru.getSessionId()) {
+        throw new Error("Cannot delegate a task to yourself. Pick a different teammate.");
+      }
+
       const roster = mamoru.getRoster();
       const target = roster.get(params.to);
       if (!target) throw new Error(`Agent "${params.to}" not found in roster.`);

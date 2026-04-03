@@ -4,7 +4,8 @@
  * RosterDetailOverlay — full team roster with descriptions.
  * TaskDetailOverlay   — active task + all outbound tasks with elapsed timers.
  *
- * Both implement Focusable and close on Escape/Enter.
+ * Both implement Focusable, support vertical scrolling (↑/↓/j/k/PgUp/PgDn),
+ * and close on Escape/Enter. They use tui.terminal.rows for pane-aware sizing.
  */
 import type { Focusable } from "@mariozechner/pi-tui";
 import { matchesKey, visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
@@ -32,10 +33,73 @@ function makeDivider(th: Theme, innerW: number): string {
   return th.fg("border", "├" + "─".repeat(innerW) + "┤");
 }
 
+// ── Scrollable overlay base ─────────────────────────────────────
+
+function handleScroll(
+  data: string,
+  scrollOffset: number,
+  totalContent: number,
+  viewportHeight: number,
+): { offset: number; handled: boolean } {
+  const maxScroll = Math.max(0, totalContent - viewportHeight);
+
+  if (matchesKey(data, "up") || matchesKey(data, "k")) {
+    return { offset: Math.max(0, scrollOffset - 1), handled: true };
+  }
+  if (matchesKey(data, "down") || matchesKey(data, "j")) {
+    return { offset: Math.min(maxScroll, scrollOffset + 1), handled: true };
+  }
+  if (matchesKey(data, "pageup")) {
+    return { offset: Math.max(0, scrollOffset - 10), handled: true };
+  }
+  if (matchesKey(data, "pagedown")) {
+    return { offset: Math.min(maxScroll, scrollOffset + 10), handled: true };
+  }
+  if (matchesKey(data, "home") || data === "g") {
+    return { offset: 0, handled: true };
+  }
+  if (matchesKey(data, "end") || data === "G") {
+    return { offset: maxScroll, handled: true };
+  }
+
+  return { offset: scrollOffset, handled: false };
+}
+
+function applyViewport(
+  th: Theme,
+  innerW: number,
+  headerLines: string[],
+  contentLines: string[],
+  footerLines: string[],
+  scrollOffset: number,
+  maxViewportHeight: number,
+): { lines: string[]; clampedOffset: number } {
+  const headerFooterHeight = headerLines.length + footerLines.length;
+  const viewportHeight = Math.max(3, maxViewportHeight - headerFooterHeight);
+  const totalContent = contentLines.length;
+  const maxScroll = Math.max(0, totalContent - viewportHeight);
+  const clamped = Math.min(scrollOffset, maxScroll);
+
+  const visible = contentLines.slice(clamped, clamped + viewportHeight);
+
+  // Pad to fill viewport
+  const emptyRow = makeRow(th, innerW, "");
+  while (visible.length < viewportHeight) {
+    visible.push(emptyRow);
+  }
+
+  return {
+    lines: [...headerLines, ...visible, ...footerLines],
+    clampedOffset: clamped,
+  };
+}
+
 // ── Roster Detail Overlay ───────────────────────────────────────
 
 export class RosterDetailOverlay implements Focusable {
   focused = false;
+  private scrollOffset = 0;
+  private tui: any;
 
   constructor(
     private roster: RosterEntry[],
@@ -43,11 +107,20 @@ export class RosterDetailOverlay implements Focusable {
     private selfStatus: string,
     private theme: Theme,
     private done: (result: void) => void,
-  ) {}
+    tui?: any,
+  ) {
+    this.tui = tui;
+  }
 
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "return")) {
       this.done();
+      return;
+    }
+
+    const result = handleScroll(data, this.scrollOffset, this.getContentLineCount(), this.getViewportHeight());
+    if (result.handled) {
+      this.scrollOffset = result.offset;
     }
   }
 
@@ -57,67 +130,100 @@ export class RosterDetailOverlay implements Focusable {
     const row = (content: string) => makeRow(th, innerW, content);
     const divider = () => makeDivider(th, innerW);
 
-    const lines: string[] = [];
+    // ── Header ────────────────────────────────────────────────────
+    const headerLines: string[] = [];
+    headerLines.push(th.fg("border", "╭" + "─".repeat(innerW) + "╮"));
+    headerLines.push(row(th.fg("accent", th.bold(" Team Roster"))));
+    headerLines.push(divider());
 
-    // Top border
-    lines.push(th.fg("border", "╭" + "─".repeat(innerW) + "╮"));
-
-    // Header
-    lines.push(row(th.fg("accent", th.bold(" Team Roster"))));
-    lines.push(divider());
+    // ── Content ───────────────────────────────────────────────────
+    const contentLines: string[] = [];
 
     // Self
     const selfIcon = this.selfStatus === "available" ? "●" : this.selfStatus === "busy" ? "○" : "✖";
-    lines.push(row(th.fg("text", ` ${selfIcon} ${this.selfName} (you) — ${this.selfStatus}`)));
-    lines.push(divider());
+    contentLines.push(row(th.fg("text", ` ${selfIcon} ${this.selfName} (you) — ${this.selfStatus}`)));
+    contentLines.push(divider());
 
     // Teammates
     if (this.roster.length === 0) {
-      lines.push(row(th.fg("muted", " No teammates online")));
+      contentLines.push(row(th.fg("muted", " No teammates online")));
     } else {
       for (const entry of this.roster) {
         const icon = entry.status === "available" ? "●" : entry.status === "busy" ? "○" : "✖";
-        lines.push(row(th.fg("text", ` ${icon} ${entry.agent_name} — ${entry.status}`)));
+        contentLines.push(row(th.fg("text", ` ${icon} ${entry.agent_name} — ${entry.status}`)));
         const desc = truncateToWidth(entry.description || "(no description)", innerW - 5);
-        lines.push(row(th.fg("muted", `     ${desc}`)));
+        contentLines.push(row(th.fg("muted", `     ${desc}`)));
         const heartbeat = entry.last_heartbeat
           ? `last seen: ${formatElapsed(entry.last_heartbeat)} ago`
           : "no heartbeat";
-        lines.push(row(th.fg("dim", `     ${heartbeat}`)));
+        contentLines.push(row(th.fg("dim", `     ${heartbeat}`)));
       }
     }
 
-    // Bottom border with hint
-    const hint = " Esc ";
+    // ── Footer ────────────────────────────────────────────────────
+    const hint = " ↑↓ scroll  Esc close ";
     const dashBefore = Math.max(0, innerW - hint.length);
-    lines.push(
+    const footerLines = [
       th.fg("border", "╰" + "─".repeat(dashBefore)) +
         th.fg("dim", hint) +
         th.fg("border", "╯"),
-    );
+    ];
 
+    const { lines, clampedOffset } = applyViewport(
+      th, innerW, headerLines, contentLines, footerLines,
+      this.scrollOffset, this.getMaxHeight(),
+    );
+    this.scrollOffset = clampedOffset;
     return lines;
   }
 
   invalidate(): void {}
   dispose(): void {}
+
+  private getMaxHeight(): number {
+    const termRows = this.tui?.terminal?.rows ?? 50;
+    return Math.max(10, Math.floor(termRows * 0.8));
+  }
+
+  private getViewportHeight(): number {
+    const headerFooter = 4; // 3 header + 1 footer
+    return Math.max(3, this.getMaxHeight() - headerFooter);
+  }
+
+  private getContentLineCount(): number {
+    // Self (1 line + divider) + teammates (3 lines each) or "no teammates" (1 line)
+    if (this.roster.length === 0) return 3; // self + divider + "no teammates"
+    return 2 + this.roster.length * 3;
+  }
 }
 
 // ── Task Detail Overlay ─────────────────────────────────────────
 
 export class TaskDetailOverlay implements Focusable {
   focused = false;
+  private scrollOffset = 0;
+  private tui: any;
 
   constructor(
     private activeTask: ActiveTask | null,
     private outboundTasks: Map<number, OutboundTask>,
     private theme: Theme,
     private done: (result: void) => void,
-  ) {}
+    tui?: any,
+  ) {
+    this.tui = tui;
+  }
 
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "return")) {
       this.done();
+      return;
+    }
+
+    const contentCount = this.getContentLineCount();
+    const result = handleScroll(data, this.scrollOffset, contentCount, this.getViewportHeight());
+    if (result.handled) {
+      this.scrollOffset = result.offset;
     }
   }
 
@@ -127,54 +233,79 @@ export class TaskDetailOverlay implements Focusable {
     const row = (content: string) => makeRow(th, innerW, content);
     const divider = () => makeDivider(th, innerW);
 
-    const lines: string[] = [];
+    // ── Header ────────────────────────────────────────────────────
+    const headerLines: string[] = [];
+    headerLines.push(th.fg("border", "╭" + "─".repeat(innerW) + "╮"));
+    headerLines.push(row(th.fg("accent", th.bold(" Task Tracker"))));
+    headerLines.push(divider());
 
-    // Top border
-    lines.push(th.fg("border", "╭" + "─".repeat(innerW) + "╮"));
+    // ── Content ───────────────────────────────────────────────────
+    const contentLines: string[] = [];
 
-    // Header
-    lines.push(row(th.fg("accent", th.bold(" Task Tracker"))));
-    lines.push(divider());
-
-    // ── Active task (worker side) ─────────────────────────────────
-    lines.push(row(th.fg("accent", " ACTIVE TASK (working on)")));
+    // Active task (worker side)
+    contentLines.push(row(th.fg("accent", " ACTIVE TASK (working on)")));
     if (this.activeTask) {
       const at = this.activeTask;
-      lines.push(row(th.fg("text", ` ⚡ Task #${at.taskId}`)));
-      lines.push(row(th.fg("muted", `     requester: ${at.requesterSessionId}`)));
-      lines.push(row(th.fg("muted", `     elapsed:   ${formatElapsed(at.startedAt)}`)));
+      contentLines.push(row(th.fg("text", ` ⚡ Task #${at.taskId}`)));
+      contentLines.push(row(th.fg("muted", `     requester: ${at.requesterSessionId}`)));
+      contentLines.push(row(th.fg("muted", `     elapsed:   ${formatElapsed(at.startedAt)}`)));
     } else {
-      lines.push(row(th.fg("muted", " No active task")));
+      contentLines.push(row(th.fg("muted", " No active task")));
     }
 
-    lines.push(divider());
+    contentLines.push(divider());
 
-    // ── Outbound tasks (requester side) ───────────────────────────
-    lines.push(row(th.fg("accent", " OUTBOUND TASKS (delegated)")));
+    // Outbound tasks (requester side)
+    contentLines.push(row(th.fg("accent", " OUTBOUND TASKS (delegated)")));
     if (this.outboundTasks.size === 0) {
-      lines.push(row(th.fg("muted", " No outbound tasks")));
+      contentLines.push(row(th.fg("muted", " No outbound tasks")));
     } else {
       for (const [, task] of this.outboundTasks) {
-        lines.push(row(th.fg("text", ` → Task #${task.taskId}`)));
-        lines.push(row(th.fg("muted", `     worker:     ${task.workerSessionId}`)));
-        lines.push(row(th.fg("muted", `     sent:       ${formatElapsed(task.sentAt)} ago`)));
-        lines.push(row(th.fg("muted", `     last event: ${formatElapsed(task.lastEventAt)} ago`)));
-        lines.push(row(th.fg("muted", `     elapsed:    ${formatElapsed(task.sentAt)}`)));
+        contentLines.push(row(th.fg("text", ` → Task #${task.taskId}`)));
+        contentLines.push(row(th.fg("muted", `     worker:     ${task.workerSessionId}`)));
+        contentLines.push(row(th.fg("muted", `     sent:       ${formatElapsed(task.sentAt)} ago`)));
+        contentLines.push(row(th.fg("muted", `     last event: ${formatElapsed(task.lastEventAt)} ago`)));
+        contentLines.push(row(th.fg("muted", `     elapsed:    ${formatElapsed(task.sentAt)}`)));
       }
     }
 
-    // Bottom border with hint
-    const hint = " Esc ";
+    // ── Footer ────────────────────────────────────────────────────
+    const hint = " ↑↓ scroll  Esc close ";
     const dashBefore = Math.max(0, innerW - hint.length);
-    lines.push(
+    const footerLines = [
       th.fg("border", "╰" + "─".repeat(dashBefore)) +
         th.fg("dim", hint) +
         th.fg("border", "╯"),
-    );
+    ];
 
+    const { lines, clampedOffset } = applyViewport(
+      th, innerW, headerLines, contentLines, footerLines,
+      this.scrollOffset, this.getMaxHeight(),
+    );
+    this.scrollOffset = clampedOffset;
     return lines;
   }
 
   invalidate(): void {}
   dispose(): void {}
+
+  private getMaxHeight(): number {
+    const termRows = this.tui?.terminal?.rows ?? 50;
+    return Math.max(10, Math.floor(termRows * 0.8));
+  }
+
+  private getViewportHeight(): number {
+    const headerFooter = 4; // 3 header + 1 footer
+    return Math.max(3, this.getMaxHeight() - headerFooter);
+  }
+
+  private getContentLineCount(): number {
+    const activeLines = this.activeTask ? 4 : 2; // header + content
+    const dividerLine = 1;
+    const outboundHeader = 1;
+    const outboundContent = this.outboundTasks.size === 0
+      ? 1
+      : this.outboundTasks.size * 5;
+    return activeLines + dividerLine + outboundHeader + outboundContent;
+  }
 }

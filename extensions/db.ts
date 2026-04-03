@@ -123,11 +123,17 @@ export function sendTaskReq(
 // ── Cursor Functions ────────────────────────────────────────────
 
 export function initCursor(db: Database.Database, sessionId: string, channel: string): void {
+  // Skip to current max message_id so we don't replay old messages from before this session.
+  // If the cursor already exists (e.g., reconnect with same session_id), keep the existing position.
+  const maxRow = db.prepare(
+    "SELECT COALESCE(MAX(message_id), 0) AS max_id FROM messages WHERE channel = ?"
+  ).get(channel) as { max_id: number };
+
   db.prepare(`
     INSERT INTO agent_cursors (session_id, channel, last_read_id)
-    VALUES (?, ?, 0)
+    VALUES (?, ?, ?)
     ON CONFLICT DO NOTHING
-  `).run(sessionId, channel);
+  `).run(sessionId, channel, maxRow.max_id);
 }
 
 export function advanceCursor(

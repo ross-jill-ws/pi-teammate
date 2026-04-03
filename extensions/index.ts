@@ -125,16 +125,16 @@ export default function (pi: ExtensionAPI) {
           const roster = mamoru!.getRoster().getAll();
           ctx.ui.custom<void>(
             (tui: any, theme: any, _kb: any, done: (result: void) => void) =>
-              new RosterDetailOverlay(roster, mamoru!.getAgentName(), mamoru!.getStatus(), theme, done),
-            { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } },
+              new RosterDetailOverlay(roster, mamoru!.getAgentName(), mamoru!.getStatus(), theme, done, tui),
+            { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "100%" } },
           );
         },
         t: () => {
           // Show task detail overlay
           ctx.ui.custom<void>(
             (tui: any, theme: any, _kb: any, done: (result: void) => void) =>
-              new TaskDetailOverlay(mamoru!.getActiveTask(), mamoru!.getOutboundTasks(), theme, done),
-            { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } },
+              new TaskDetailOverlay(mamoru!.getActiveTask(), mamoru!.getOutboundTasks(), theme, done, tui),
+            { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "100%" } },
           );
         },
       };
