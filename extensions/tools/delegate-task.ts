@@ -60,6 +60,9 @@ export function createDelegateTaskTool(opts: {
       // Register outbound task for timeout tracking
       mamoru.registerOutboundTask(messageId, params.to);
 
+      // Log outbound event
+      mamoru.logOutbound("task_req", target.agent_name, messageId, params.task);
+
       return {
         content: [{ type: "text" as const, text: `Task #${messageId} sent to "${target.agent_name}". Waiting for acknowledgement.` }],
         details: { taskId: messageId, to: params.to, agentName: target.agent_name },

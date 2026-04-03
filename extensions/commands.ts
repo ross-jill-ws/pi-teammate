@@ -2,6 +2,8 @@
  * Slash commands for pi-teammate.
  */
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Key } from "@mariozechner/pi-tui";
+import { MamoruOverlay } from "./tui/mamoru-overlay.ts";
 import type Database from "better-sqlite3";
 import { mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -380,6 +382,70 @@ export function registerCommands(
       } finally {
         db.close();
       }
+    },
+  });
+
+  // ── /mamoru ──────────────────────────────────────────────────
+  pi.registerCommand("mamoru", {
+    description: "Show MAMORU event log overlay (all received/sent events)",
+    handler: async (_args, ctx) => {
+      const mamoru = getMamoru();
+      if (!mamoru) {
+        ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
+        return;
+      }
+
+      await ctx.ui.custom<void>(
+        (tui: any, theme: any, _keybindings: any, done: (result: void) => void) => {
+          return new MamoruOverlay(
+            () => mamoru.getEventLog(),
+            theme,
+            done,
+            tui,
+          );
+        },
+        {
+          overlay: true,
+          overlayOptions: {
+            anchor: "top-right",
+            width: "34%",
+            maxHeight: "100%",
+            margin: 0,
+          },
+        },
+      );
+    },
+  });
+
+  // Also register Ctrl+3 shortcut for quick access
+  pi.registerShortcut(Key.ctrl("3" as any), {
+    description: "Show MAMORU event log",
+    handler: async (ctx) => {
+      const mamoru = getMamoru();
+      if (!mamoru) {
+        ctx.ui.notify("Not connected to any team channel.", "warning");
+        return;
+      }
+
+      await ctx.ui.custom<void>(
+        (tui: any, theme: any, _keybindings: any, done: (result: void) => void) => {
+          return new MamoruOverlay(
+            () => mamoru.getEventLog(),
+            theme,
+            done,
+            tui,
+          );
+        },
+        {
+          overlay: true,
+          overlayOptions: {
+            anchor: "top-right",
+            width: "34%",
+            maxHeight: "100%",
+            margin: 0,
+          },
+        },
+      );
     },
   });
 

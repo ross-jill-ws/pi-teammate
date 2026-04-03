@@ -80,6 +80,9 @@ export function createSendMessageTool(opts: {
       // Let MAMORU handle outbound status transitions
       mamoru.handleOutbound(params.event, params.task_id);
 
+      // Log outbound event
+      mamoru.logOutbound(params.event, params.to ?? "(broadcast)", params.task_id ?? null, params.content);
+
       const target = params.to ? `"${params.to}"` : "broadcast";
       return {
         content: [

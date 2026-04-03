@@ -1038,3 +1038,72 @@ This is a **pre-release** extension. No backward compatibility with the current 
 | **9 — File Permissions** | Documentation | Small | N/A |
 
 **Recommended order**: Strictly sequential. Each phase depends on the previous. Phase 3 (MAMORU) is the critical path — get it right and everything else follows.
+
+---
+
+### Phase 10: `/mamoru` Event Log Overlay
+
+**Goal**: A live, scrollable overlay showing all events MAMORU has handled, with color-coded direction/type and LLM forwarding indicators.
+
+#### 10.1 — Event Log in MAMORU
+
+MAMORU records every event it handles (both received and sent) into an in-memory `eventLog` array:
+
+```ts
+export interface MamoruEventLog {
+  timestamp: number;
+  direction: "recv" | "sent";
+  event: string;              // e.g., "task_req", "task_ack", "ping"
+  otherParty: string;         // agent name of the other side
+  taskId: number | null;
+  content: string | null;
+  forwardedToLlm: boolean;    // true if this event was steered to the LLM
+}
+```
+
+Every `processMessage` branch logs a `recv` entry. Every `autoReply` logs a `sent` entry. The `delegate_task` and `send_message` tools call `mamoru.logOutbound()` to log their sent events.
+
+#### 10.2 — `/mamoru` Command + Ctrl+3 Shortcut
+
+Registered in `commands.ts`. Opens the overlay:
+
+```ts
+pi.registerCommand("mamoru", {
+  description: "Show MAMORU event log overlay",
+  handler: async (_args, ctx) => {
+    await ctx.ui.custom<void>(
+      (tui, theme, _kb, done) => new MamoruOverlay(() => mamoru.getEventLog(), theme, done, tui),
+      {
+        overlay: true,
+        overlayOptions: { anchor: "top-right", width: "34%", maxHeight: "100%", margin: 0 },
+      }
+    );
+  }
+});
+```
+
+Also registered as Ctrl+3 shortcut for quick access.
+
+#### 10.3 — `extensions/tui/mamoru-overlay.ts`
+
+A `Focusable` overlay component anchored to the right 1/3 of the terminal, full height.
+
+**Features**:
+- **Color-coded events**:
+  - Received events: blue/cyan family (◀ RECV)
+  - Sent events: color by type (▶ SENT)
+    - `task_done`, `task_ack` → green
+    - `task_fail`, `task_reject` → red
+    - `task_cancel` → orange
+    - `task_update`, `task_cancel_ack` → yellow
+    - `task_clarify`, `task_clarify_res` → cyan
+    - `pong` → dim
+    - `broadcast` → magenta
+- **Per-entry display**: direction arrow, event name, timestamp, other party, task ID, content preview, LLM forwarding indicator (⚡ → LLM)
+- **Vertical scrolling**: ↑/↓, j/k, PageUp/PageDown, Home/End (g/G)
+- **Auto-scroll**: Automatically scrolls to bottom on new events unless user has manually scrolled up. Scrolling back to bottom re-enables auto-scroll.
+- **Live refresh**: 500ms timer checks for new events and triggers re-render
+- **Scrollbar**: Visual scroll position indicator on the right edge when content exceeds viewport
+- **Close**: Esc key
+
+**No automated tests** — tested manually in REPL.

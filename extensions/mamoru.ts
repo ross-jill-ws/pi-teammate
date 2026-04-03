@@ -28,6 +28,17 @@ import {
 } from "./db.ts";
 import { Roster } from "./roster.ts";
 
+/** A single entry in the MAMORU event log. */
+export interface MamoruEventLog {
+  timestamp: number;
+  direction: "recv" | "sent";
+  event: string;
+  otherParty: string;       // agent name of the other side
+  taskId: number | null;
+  content: string | null;
+  forwardedToLlm: boolean;
+}
+
 export class Mamoru {
   private db: Database.Database;
   private sessionId: string;
@@ -44,6 +55,7 @@ export class Mamoru {
   private activeTask: ActiveTask | null = null;
   private outboundTasks: Map<number, OutboundTask> = new Map();
   private contextBuffer: string[] = []; // buffered broadcast/info messages
+  private eventLog: MamoruEventLog[] = [];
 
   constructor(opts: {
     db: Database.Database;
@@ -158,6 +170,11 @@ export class Mamoru {
     return this.sessionId;
   }
 
+  /** Get the full event log (for the /mamoru overlay). */
+  getEventLog(): MamoruEventLog[] {
+    return this.eventLog;
+  }
+
   /** Register an outbound task for timeout tracking. */
   registerOutboundTask(taskId: number, workerSessionId: string): void {
     this.outboundTasks.set(taskId, {
@@ -227,17 +244,19 @@ export class Mamoru {
   private processMessage(msg: MessageRow, payload: MessagePayload): void {
     switch (payload.event) {
       case "ping":
+        this.logEvent("recv", "ping", msg.from_agent, msg.task_id, payload.content, false);
         this.autoReply(msg.from_agent, "pong", "pong", msg.task_id, msg.message_id);
         updateHeartbeat(this.db, this.sessionId);
         break;
 
       case "pong":
-        // Received a pong response — just note it (no action for now)
+        this.logEvent("recv", "pong", msg.from_agent, msg.task_id, null, false);
         break;
 
       case "task_req":
         if (isNewTaskReq(msg)) {
           if (this.status === "available") {
+            this.logEvent("recv", "task_req", msg.from_agent, msg.task_id, payload.content, true);
             this.autoReply(msg.from_agent, "task_ack", "accepted", msg.task_id, msg.message_id);
             this.setStatus("busy");
             this.activeTask = {
@@ -247,15 +266,17 @@ export class Mamoru {
             };
             this.forwardToLlm(msg, payload);
           } else {
+            this.logEvent("recv", "task_req", msg.from_agent, msg.task_id, payload.content, false);
             this.autoReply(msg.from_agent, "task_reject", "busy", msg.task_id, msg.message_id);
           }
         } else {
-          // Non-standard task_req (task_id != message_id) — forward to LLM
+          this.logEvent("recv", "task_req", msg.from_agent, msg.task_id, payload.content, true);
           this.forwardToLlm(msg, payload);
         }
         break;
 
       case "task_cancel":
+        this.logEvent("recv", "task_cancel", msg.from_agent, msg.task_id, payload.content, false);
         this.autoReply(msg.from_agent, "task_cancel_ack", "cancelled", msg.task_id, msg.message_id);
         this.setStatus("available");
         this.activeTask = null;
@@ -267,6 +288,8 @@ export class Mamoru {
         break;
 
       case "broadcast":
+        this.logEvent("recv", "broadcast", msg.from_agent, msg.task_id, payload.content,
+          payload.intent !== "agent_join" && payload.intent !== "agent_leave" && payload.intent !== "agent_status_change");
         if (payload.intent === "agent_join") {
           const agent = getAgentBySession(this.db, msg.from_agent);
           if (agent && agent.description) {
@@ -301,34 +324,39 @@ export class Mamoru {
         break;
 
       case "info_only":
+        this.logEvent("recv", "info_only", msg.from_agent, msg.task_id, payload.content, true);
         this.contextBuffer.push(`[info] ${payload.content}`);
         this.forwardToLlm(msg, payload);
         break;
 
       case "task_ack":
-        // Noted — no action needed
+        this.logEvent("recv", "task_ack", msg.from_agent, msg.task_id, payload.content, false);
         break;
 
       case "task_cancel_ack":
-        // We sent a cancel, they acknowledged
+        this.logEvent("recv", "task_cancel_ack", msg.from_agent, msg.task_id, payload.content, false);
         if (msg.task_id) {
           this.outboundTasks.delete(msg.task_id);
         }
         break;
 
       case "task_reject":
+        this.logEvent("recv", "task_reject", msg.from_agent, msg.task_id, payload.content, true);
         this.forwardToLlm(msg, payload);
         break;
 
       case "task_clarify":
+        this.logEvent("recv", "task_clarify", msg.from_agent, msg.task_id, payload.content, true);
         this.forwardToLlm(msg, payload);
         break;
 
       case "task_clarify_res":
+        this.logEvent("recv", "task_clarify_res", msg.from_agent, msg.task_id, payload.content, true);
         this.forwardToLlm(msg, payload);
         break;
 
       case "task_done":
+        this.logEvent("recv", "task_done", msg.from_agent, msg.task_id, payload.content, true);
         if (msg.task_id) {
           this.outboundTasks.delete(msg.task_id);
         }
@@ -336,6 +364,7 @@ export class Mamoru {
         break;
 
       case "task_fail":
+        this.logEvent("recv", "task_fail", msg.from_agent, msg.task_id, payload.content, true);
         if (msg.task_id) {
           this.outboundTasks.delete(msg.task_id);
         }
@@ -343,11 +372,12 @@ export class Mamoru {
         break;
 
       case "task_update":
+        this.logEvent("recv", "task_update", msg.from_agent, msg.task_id, payload.content, true);
         this.forwardToLlm(msg, payload);
         break;
 
       default:
-        // Unknown event — forward to LLM as fallback
+        this.logEvent("recv", payload.event, msg.from_agent, msg.task_id, payload.content, true);
         this.forwardToLlm(msg, payload);
         break;
     }
@@ -376,6 +406,7 @@ export class Mamoru {
     taskId: number | null,
     refMessageId: number | null,
   ): void {
+    this.logEvent("sent", event, this.getAgentDisplayName(toAgent), taskId, content, false);
     const payload = createPayload(event as any, content);
     sendMessage(this.db, {
       from_agent: this.sessionId,
@@ -397,6 +428,30 @@ export class Mamoru {
     if (agent) return agent.agent_name;
 
     return sessionId;
+  }
+
+  /** Log an outbound event from a tool (delegate_task or send_message). */
+  logOutbound(event: string, otherParty: string, taskId: number | null, content: string | null): void {
+    this.logEvent("sent", event, otherParty, taskId, content, false);
+  }
+
+  private logEvent(
+    direction: "recv" | "sent",
+    event: string,
+    otherParty: string,
+    taskId: number | null,
+    content: string | null,
+    forwardedToLlm: boolean,
+  ): void {
+    this.eventLog.push({
+      timestamp: Date.now(),
+      direction,
+      event,
+      otherParty,
+      taskId,
+      content,
+      forwardedToLlm,
+    });
   }
 
   private refreshDelegateTaskTool(): void {
