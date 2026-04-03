@@ -20,6 +20,11 @@ export interface PrefixKeyActions {
   t: () => void; // task overlay
 }
 
+export interface PrefixKeyCallbacks {
+  /** Called when Esc is pressed (to close overlays). Return true if handled. */
+  onEsc?: () => boolean;
+}
+
 // Debounce period after entering prefix mode — skips key release events
 // from the Ctrl+T press (Kitty keyboard protocol sends release events).
 const DEBOUNCE_MS = 150;
@@ -28,6 +33,7 @@ export function setupPrefixKeys(
   pi: ExtensionAPI,
   getCtx: () => ExtensionContext | null,
   getActions: () => PrefixKeyActions | null,
+  callbacks?: PrefixKeyCallbacks,
 ): void {
   let prefixActive = false;
   let prefixActivatedAt = 0;
@@ -86,6 +92,13 @@ export function setupPrefixKeys(
 
         // Unknown key — cancel prefix, don't consume (let it through to editor)
         return undefined;
+      }
+
+      // Esc — close active overlay if callback handles it
+      if (matchesKey(data, "escape")) {
+        if (callbacks?.onEsc?.()) {
+          return { consume: true };
+        }
       }
 
       return undefined;

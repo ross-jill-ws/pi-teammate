@@ -237,7 +237,7 @@ export class MamoruOverlay implements Focusable {
     // ── Footer ────────────────────────────────────────────────────
     const footerLines: string[] = [];
     const hint = this.focused
-      ? " ↑↓ scroll  PgUp/PgDn  Esc close "
+      ? " ↑↓ scroll  PgUp/PgDn  Esc close  C-t m unfocus "
       : " C-t m focus  Esc close ";
     const dashBefore = Math.max(0, innerW - hint.length);
     footerLines.push(

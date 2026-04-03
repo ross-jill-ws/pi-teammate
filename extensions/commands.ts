@@ -398,16 +398,9 @@ export function registerCommands(
       return;
     }
 
-    // If overlay exists, toggle focus or close
+    // If overlay exists, toggle focus/unfocus (cycle)
     if (activeMamoruOverlay) {
-      if (activeMamoruOverlay.focused) {
-        // Focused → close
-        activeMamoruOverlay.close();
-        activeMamoruOverlay = null;
-      } else {
-        // Visible but not focused → focus (enable scrolling)
-        activeMamoruOverlay.toggleFocus();
-      }
+      activeMamoruOverlay.toggleFocus();
       return;
     }
 
@@ -446,9 +439,18 @@ export function registerCommands(
     });
   }
 
-  // Expose toggleMamoruOverlay for prefix key system
+  // Expose actions for prefix key system
   (pi as any).__teammateActions = {
     toggleMamoru: (ctx: any) => toggleMamoruOverlay(ctx),
+    /** Close the MAMORU overlay if open. Returns true if it was open. */
+    closeMamoru: (): boolean => {
+      if (activeMamoruOverlay) {
+        activeMamoruOverlay.close();
+        activeMamoruOverlay = null;
+        return true;
+      }
+      return false;
+    },
   };
 
   pi.registerCommand("mamoru", {

@@ -107,7 +107,7 @@ export default function (pi: ExtensionAPI) {
     { bootstrapMamoru },
   );
 
-  // ── Prefix Keys (Ctrl+T → m/r/t) ──────────────────────────
+  // ── Prefix Keys (Ctrl+T → m/r/t) + Esc to close ──────────
   setupPrefixKeys(
     pi,
     () => extensionCtx,
@@ -138,6 +138,14 @@ export default function (pi: ExtensionAPI) {
           );
         },
       };
+    },
+    {
+      onEsc: () => {
+        // Close MAMORU overlay if it's open (regardless of focus state)
+        const actions = (pi as any).__teammateActions;
+        if (actions?.closeMamoru?.()) return true;
+        return false;
+      },
     },
   );
 
