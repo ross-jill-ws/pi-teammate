@@ -20,12 +20,17 @@ export interface PrefixKeyActions {
   t: () => void; // task overlay
 }
 
+// Debounce period after entering prefix mode — skips key release events
+// from the Ctrl+T press (Kitty keyboard protocol sends release events).
+const DEBOUNCE_MS = 150;
+
 export function setupPrefixKeys(
   pi: ExtensionAPI,
   getCtx: () => ExtensionContext | null,
   getActions: () => PrefixKeyActions | null,
 ): void {
   let prefixActive = false;
+  let prefixActivatedAt = 0;
   let prefixTimer: ReturnType<typeof setTimeout> | null = null;
 
   pi.on("session_start", async (_event, ctx) => {
@@ -33,6 +38,7 @@ export function setupPrefixKeys(
       // Step 1: Detect prefix key (Ctrl+T)
       if (!prefixActive && matchesKey(data, PREFIX_KEY)) {
         prefixActive = true;
+        prefixActivatedAt = Date.now();
         ctx.ui.setStatus("teammate-prefix", "Ctrl+T ▸ (m)amoru  (r)oster  (t)asks");
 
         // Auto-cancel after timeout
@@ -48,6 +54,11 @@ export function setupPrefixKeys(
 
       // Step 2: Handle second key in prefix mode
       if (prefixActive) {
+        // Skip key release events from the Ctrl+T press (debounce)
+        if (Date.now() - prefixActivatedAt < DEBOUNCE_MS) {
+          return { consume: true };
+        }
+
         prefixActive = false;
         if (prefixTimer) {
           clearTimeout(prefixTimer);
