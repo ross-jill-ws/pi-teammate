@@ -4,9 +4,9 @@
  * Anchored to the right side (1/3 width, 100% height). Non-capturing by default
  * so the user can type in the editor while viewing events. Auto-scrolls to bottom.
  *
- * When focused (via Alt+3 toggle), supports vertical scrolling:
- * ↑/↓/j/k, PageUp/PageDown, Home/End (g/G). Esc unfocuses back to editor.
- * Alt+3 again closes the overlay entirely.
+ * Opened via Ctrl+T then m, or /mamoru command.
+ * When focused, supports vertical scrolling: ↑/↓/j/k, PageUp/PageDown, Home/End.
+ * Esc closes the overlay. Ctrl+T then m toggles focus/close.
  */
 import type { Focusable } from "@mariozechner/pi-tui";
 import { matchesKey, visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
@@ -237,8 +237,8 @@ export class MamoruOverlay implements Focusable {
     // ── Footer ────────────────────────────────────────────────────
     const footerLines: string[] = [];
     const hint = this.focused
-      ? " ↑↓ scroll  PgUp/PgDn  Esc/Alt+3 close "
-      : " Alt+3 focus  Esc close ";
+      ? " ↑↓ scroll  PgUp/PgDn  Esc close "
+      : " C-t m focus  Esc close ";
     const dashBefore = Math.max(0, innerW - hint.length);
     footerLines.push(
       th.fg("border", "└" + "─".repeat(dashBefore)) +

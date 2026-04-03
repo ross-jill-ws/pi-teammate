@@ -2,7 +2,6 @@
  * Slash commands for pi-teammate.
  */
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Key } from "@mariozechner/pi-tui";
 import { MamoruOverlay } from "./tui/mamoru-overlay.ts";
 import type Database from "better-sqlite3";
 import { mkdirSync, existsSync } from "node:fs";
@@ -388,12 +387,11 @@ export function registerCommands(
   // ── /mamoru overlay (toggle) ──────────────────────────────────
   //
   // The overlay is non-capturing: the user can type in the editor while it's
-  // visible. Alt+3 cycles through: show → focus (scroll) → close.
-  // Esc from focused state returns to non-capturing (typing) mode.
+  // visible. Ctrl+T → m also toggles. Esc closes when focused.
   //
   let activeMamoruOverlay: MamoruOverlay | null = null;
 
-  function showMamoruOverlay(ctx: any) {
+  function toggleMamoruOverlay(ctx: any) {
     const mamoru = getMamoru();
     if (!mamoru) {
       ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
@@ -448,17 +446,15 @@ export function registerCommands(
     });
   }
 
-  pi.registerCommand("mamoru", {
-    description: "Toggle MAMORU event log overlay (non-blocking, Alt+3 to focus/close)",
-    handler: async (_args, ctx) => {
-      showMamoruOverlay(ctx);
-    },
-  });
+  // Expose toggleMamoruOverlay for prefix key system
+  (pi as any).__teammateActions = {
+    toggleMamoru: (ctx: any) => toggleMamoruOverlay(ctx),
+  };
 
-  pi.registerShortcut(Key.alt("3" as any), {
-    description: "Toggle MAMORU event log (show → focus → close)",
-    handler: async (ctx) => {
-      showMamoruOverlay(ctx);
+  pi.registerCommand("mamoru", {
+    description: "Toggle MAMORU event log overlay (Ctrl+T then m)",
+    handler: async (_args, ctx) => {
+      toggleMamoruOverlay(ctx);
     },
   });
 

@@ -1084,7 +1084,15 @@ pi.registerCommand("mamoru", {
 
 Also registered as **Ctrl+Shift+M** shortcut for quick access. Uses `nonCapturing: true` so the user can type in the editor while the overlay is visible. Ctrl+Shift+M cycles: show (non-capturing) → focus (scrollable) → close. Esc from focused state unfocuses back to editor.
 
-**Shortcut convention**: pi-teammate uses `Ctrl+Shift+<letter>` shortcuts to avoid conflicts with `pi-subagent-in-memory` which uses `Ctrl+<number>`. Ctrl+Alt+N doesn't work reliably across terminals (iTerm/macOS don't send the expected escape sequences).
+**Shortcut convention**: pi-teammate uses a **prefix key** system (`Ctrl+T` then a letter) to avoid conflicts with all other extensions and terminal apps. This is similar to tmux's `Ctrl+B` prefix:
+
+- `Ctrl+T` → `m` : MAMORU event log overlay (toggle: show → focus → close)
+- `Ctrl+T` → `r` : Roster detail overlay
+- `Ctrl+T` → `t` : Task detail overlay
+
+After pressing `Ctrl+T`, a status bar hint appears showing available keys. The prefix times out after 1.5 seconds if no second key is pressed.
+
+This avoids conflicts with `pi-subagent-in-memory` (`Ctrl+N`), terminal apps, and macOS system shortcuts. Implemented in `extensions/prefix-keys.ts` using `ctx.ui.onTerminalInput()`.
 
 #### 10.3 — `extensions/tui/mamoru-overlay.ts`
 
