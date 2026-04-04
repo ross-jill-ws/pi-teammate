@@ -49,7 +49,7 @@ extensions/
 │   └── send-message.ts       # send_message tool (LLM tells MAMORU to send outbound messages)
 ├── tui/
 │   ├── teammate-widget.ts    # Main widget: team roster + task summary cards
-│   └── detail-overlay.ts     # Popup overlay for full task/roster details (Ctrl+N)
+│   └── detail-overlay.ts     # Popup overlay for full task/roster details (Ctrl+T → r/t)
 ├── commands.ts               # Slash commands (/team-create, /team-join, /team-leave, etc.)
 └── talk-prompt-handler.ts    # Fun mode: 2 agents chatting freely (adapted to new framework)
 
@@ -674,7 +674,7 @@ The main widget renders **two cards** side by side:
 - Title: `team: {channelName}`
 - Badge: `#1`
 - Shows self (highlighted) + up to 4 teammates with status
-- If >5 agents: footer shows "show more: C-S-r" (Ctrl+Shift+R for roster)
+- If >5 agents: footer shows "show more: C-t r" (Ctrl+T → r for roster)
 - Each entry: `● name — status` (● for available, ○ for busy, ✖ for inactive)
 
 **Card 2 — Task Tracker** (widget key: `teammate-tasks`):
@@ -684,7 +684,7 @@ The main widget renders **two cards** side by side:
   - Task ref ID + first ~30 chars of content
   - Who it's assigned to
   - Status (busy/done/failed) + **elapsed timer** (live, updated every 500ms)
-- If >4 tasks: footer shows "show more: C-S-t" (Ctrl+Shift+T for tasks)
+- If >4 tasks: footer shows "show more: C-t t" (Ctrl+T → t for tasks)
 
 **Implementation pattern**: Follow `SubagentCardsWidget` from `pi-subagent-in-memory`:
 - Component class with `render(width): string[]` and `dispose()`
@@ -1087,7 +1087,7 @@ export interface MamoruEventLog {
 
 Every `processMessage` branch logs a `recv` entry. Every `autoReply` logs a `sent` entry. The `delegate_task` and `send_message` tools call `mamoru.logOutbound()` to log their sent events.
 
-#### 10.2 — `/mamoru` Command + Ctrl+Shift+M Shortcut
+#### 10.2 — `/mamoru` Command + Ctrl+T → m Shortcut
 
 Registered in `commands.ts`. Opens the overlay:
 
@@ -1124,7 +1124,7 @@ Esc priority order: roster → task → MAMORU (first open overlay wins).
 
 **Pane-aware sizing**: All overlays read `tui.terminal.rows` to compute viewport height relative to the actual terminal pane, not the full window. This ensures correct rendering in split-pane setups (e.g., tmux horizontal split, iTerm split).
 
-This avoids conflicts with `pi-subagent-in-memory` (`Ctrl+N`), terminal apps, and macOS system shortcuts. Implemented in `extensions/prefix-keys.ts` using `ctx.ui.onTerminalInput()`.
+This avoids conflicts with `pi-subagent-in-memory` (which uses `Ctrl+N`), terminal apps, and macOS system shortcuts. Implemented in `extensions/prefix-keys.ts` using `ctx.ui.onTerminalInput()`.
 
 #### 10.3 — `extensions/tui/mamoru-overlay.ts`
 
