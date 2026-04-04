@@ -14,7 +14,7 @@ import { createSendMessageTool } from "./tools/send-message.ts";
 import { registerCommands } from "./commands.ts";
 import { DEFAULT_MAMORU_CONFIG } from "./types.ts";
 import { setupPrefixKeys } from "./prefix-keys.ts";
-import { resolveChannel, getChannelBaseDir, getTeammateDir } from "./paths.ts";
+import { getChannelDir, getDbPath, getTeammateDir, channelExists } from "./paths.ts";
 
 export default function (pi: ExtensionAPI) {
   let mamoru: Mamoru | null = null;
@@ -52,34 +52,30 @@ export default function (pi: ExtensionAPI) {
   // ── Bootstrap Helper ────────────────────────────────────────────
   function bootstrapMamoru(ctx: ExtensionContext, channel: string, agentName: string, forceNew?: boolean): void {
     const sessionId = ctx.sessionManager.getSessionId();
+    const channelDir = getChannelDir(channel);
+    const dbPath = getDbPath(channel);
 
     // --team-new: delete entire channel directory and start clean
-    if (forceNew) {
-      const channelBase = getChannelBaseDir(channel);
-      if (existsSync(channelBase)) {
-        rmSync(channelBase, { recursive: true, force: true });
-        console.log(`[teammate] Deleted existing channel: ${channelBase}`);
-      }
+    if (forceNew && existsSync(channelDir)) {
+      rmSync(channelDir, { recursive: true, force: true });
+      console.log(`[teammate] Deleted existing channel: ${channelDir}`);
     }
 
-    // Resolve channel: find existing or create new (this agent becomes builder)
-    const resolved = resolveChannel(channel, sessionId);
-
-    if (!resolved.exists) {
-      mkdirSync(resolved.channelDir, { recursive: true });
-      const tempDb = new Database(resolved.dbPath);
+    if (!channelExists(channel)) {
+      mkdirSync(channelDir, { recursive: true });
+      const tempDb = new Database(dbPath);
       initSchema(tempDb);
       tempDb.close();
-      console.log(`[teammate] Created channel DB: ${resolved.dbPath}`);
+      console.log(`[teammate] Created channel DB: ${dbPath}`);
     }
 
     // Create this teammate's detail directory
-    const teammateDir = getTeammateDir(channel, resolved.builderSessionId, sessionId);
+    const teammateDir = getTeammateDir(channel, sessionId);
 
     if (activeDb) {
       try { activeDb.close(); } catch {}
     }
-    const db = new Database(resolved.dbPath);
+    const db = new Database(dbPath);
     initSchema(db);
     activeDb = db;
 

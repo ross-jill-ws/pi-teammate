@@ -118,20 +118,18 @@ All team data is stored under `~/.pi/pi-teammate/`:
 
 ```
 ~/.pi/pi-teammate/
-└── <channel>/                          # e.g. "apollo"
-    └── <builder_session_id>/           # session ID of the agent who created the channel
-        ├── team.db                     # shared SQLite database (WAL mode)
-        ├── <teammate_A_session_id>/    # detail files produced by teammate A
-        │   ├── review-pr123.md
-        │   └── test-results.json
-        └── <teammate_B_session_id>/    # detail files produced by teammate B
-            └── refactor-spec.md
+└── <channel>/                          # e.g. "mytest"
+    ├── team.db                         # shared SQLite database (WAL mode)
+    ├── <teammate_A_session_id>/        # detail files produced by teammate A
+    │   ├── review-pr123.md
+    │   └── test-results.json
+    └── <teammate_B_session_id>/        # detail files produced by teammate B
+        └── refactor-spec.md
 ```
 
-- The **builder** is the first agent who creates the channel. Its session_id becomes part of the path.
-- Other agents **discover** the channel by scanning `~/.pi/pi-teammate/<channel>/` for a subdirectory containing `team.db`.
-- Each teammate gets a dedicated directory for storing **detail files** (referenced by the `detail` field in message payloads). This ensures file outputs are organized per-agent and accessible to all teammates.
-- `--team-new` deletes the entire `<channel>/` directory and starts clean.
+- Each channel name maps to exactly **one directory** with **one `team.db`** file.
+- Each teammate gets a dedicated subdirectory (keyed by session_id) for storing **detail files** (referenced by the `detail` field in message payloads).
+- `--team-new` or `/team-create` deletes the entire `<channel>/` directory and creates a fresh `team.db`.
 
 ### Cursor Initialization
 

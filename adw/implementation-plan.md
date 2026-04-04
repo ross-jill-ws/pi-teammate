@@ -833,19 +833,20 @@ pi.on("session_start", async (_event, ctx) => {
 ```ts
 function bootstrapMamoru(ctx, channel, agentName, forceNew?) {
   const sessionId = ctx.sessionManager.getSessionId();
+  const channelDir = getChannelDir(channel);
 
   // --team-new: delete entire channel directory and start clean
-  if (forceNew) {
-    const channelBase = getChannelBaseDir(channel);
-    if (existsSync(channelBase)) {
-      rmSync(channelBase, { recursive: true, force: true });
-    }
+  if (forceNew && existsSync(channelDir)) {
+    rmSync(channelDir, { recursive: true, force: true });
   }
 
-  // Resolve channel: find existing or create new (this agent becomes builder)
-  const resolved = resolveChannel(channel, sessionId);
+  if (!channelExists(channel)) {
+    mkdirSync(channelDir, { recursive: true });
+    // Create and init team.db
+  }
+
   // Create teammate detail directory
-  const teammateDir = getTeammateDir(channel, resolved.builderSessionId, sessionId);
+  const teammateDir = getTeammateDir(channel, sessionId);
   // Open DB, register agent, start MAMORU with teammateDir
   ...
 }
@@ -1049,10 +1050,10 @@ This is a **pre-release** extension. No backward compatibility with the current 
 
 - Phase 1 introduces a new `initSchema()` that creates the new tables
 - Old `.db` files won't work — delete `~/.pi/pi-teammate/` and recreate channels
-- Directory layout: `~/.pi/pi-teammate/<channel>/<builder_session_id>/team.db`
-- Each teammate gets a detail directory: `~/.pi/pi-teammate/<channel>/<builder_session_id>/<teammate_session_id>/`
-- Path helpers in `extensions/paths.ts`: `resolveChannel()`, `findBuilderSessionId()`, `getTeammateDir()`
-- `--team-new` deletes the entire `<channel>/` directory (not just the `.db` file)
+- Directory layout: `~/.pi/pi-teammate/<channel>/team.db`
+- Each teammate gets a detail directory: `~/.pi/pi-teammate/<channel>/<teammate_session_id>/`
+- Path helpers in `extensions/paths.ts`: `getChannelDir()`, `getDbPath()`, `getTeammateDir()`, `channelExists()`
+- `--team-new` deletes the entire `<channel>/` directory and creates a fresh `team.db`
 - Add a version marker to the DB (e.g., `PRAGMA user_version = 2`) so future migrations can detect schema version
 
 ---
