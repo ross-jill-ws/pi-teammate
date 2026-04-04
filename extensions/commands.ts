@@ -6,19 +6,12 @@ import { MamoruOverlay } from "./tui/mamoru-overlay.ts";
 import { RosterDetailOverlay, TaskDetailOverlay } from "./tui/detail-overlay.ts";
 import type Database from "better-sqlite3";
 import { mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { initSchema } from "./schema.ts";
 import { parsePayload, createPayload } from "./types.ts";
 import type { MessageRow, MessagePayload } from "./types.ts";
 import { sendMessage, getMessagesByTaskId } from "./db.ts";
 import type { Mamoru } from "./mamoru.ts";
-
-const BASE_DIR = join(homedir(), ".pi", "pi-teammate");
-
-function getDbPath(channelName: string): string {
-  return join(BASE_DIR, `${channelName}.db`);
-}
+import { resolveChannel, getChannelBaseDir } from "./paths.ts";
 
 function formatTimestamp(ts: number): string {
   return new Date(ts).toLocaleString();
@@ -47,24 +40,25 @@ export function registerCommands(
     description: "Create a new team channel DB. Usage: /team-create [channelName]",
     handler: async (args, ctx) => {
       const channelName = args.trim() || ctx.sessionManager.getSessionId();
+      const sessionId = ctx.sessionManager.getSessionId();
 
-      mkdirSync(BASE_DIR, { recursive: true });
-
-      const dbPath = getDbPath(channelName);
-      if (existsSync(dbPath)) {
-        ctx.ui.notify(`Channel "${channelName}" already exists at ${dbPath}`, "error");
+      const resolved = resolveChannel(channelName, sessionId);
+      if (resolved.exists) {
+        ctx.ui.notify(`Channel "${channelName}" already exists at ${resolved.dbPath}`, "error");
         return;
       }
 
+      mkdirSync(resolved.channelDir, { recursive: true });
+
       const Database = (await import("better-sqlite3")).default;
-      const db = new Database(dbPath);
+      const db = new Database(resolved.dbPath);
       try {
         initSchema(db);
       } finally {
         db.close();
       }
 
-      ctx.ui.notify(`Created channel DB: ${dbPath}`, "info");
+      ctx.ui.notify(`Created channel DB: ${resolved.dbPath}`, "info");
     },
   });
 
@@ -140,7 +134,7 @@ export function registerCommands(
       const payload = createPayload("broadcast", message);
 
       const Database = (await import("better-sqlite3")).default;
-      const dbPath = getDbPath(mamoru.getChannel());
+      const resolved = resolveChannel(mamoru.getChannel()); const dbPath = resolved.dbPath;
       const db = new Database(dbPath);
       try {
         const msgId = sendMessage(db, {
@@ -224,7 +218,7 @@ export function registerCommands(
       const channel = mamoru.getChannel();
 
       const Database = (await import("better-sqlite3")).default;
-      const dbPath = getDbPath(channel);
+      const resolved = resolveChannel(channel); const dbPath = resolved.dbPath;
       const db = new Database(dbPath, { readonly: true });
 
       try {
@@ -307,7 +301,7 @@ export function registerCommands(
       const channel = mamoru.getChannel();
 
       const Database = (await import("better-sqlite3")).default;
-      const dbPath = getDbPath(channel);
+      const resolved = resolveChannel(channel); const dbPath = resolved.dbPath;
       const db = new Database(dbPath, { readonly: true });
 
       try {
@@ -366,7 +360,7 @@ export function registerCommands(
       });
 
       const Database = (await import("better-sqlite3")).default;
-      const dbPath = getDbPath(mamoru.getChannel());
+      const resolved = resolveChannel(mamoru.getChannel()); const dbPath = resolved.dbPath;
       const db = new Database(dbPath);
 
       try {
@@ -589,7 +583,7 @@ export function registerCommands(
       }
 
       const Database = (await import("better-sqlite3")).default;
-      const dbPath = getDbPath(mamoru.getChannel());
+      const resolved = resolveChannel(mamoru.getChannel()); const dbPath = resolved.dbPath;
       const db = new Database(dbPath, { readonly: true });
 
       try {

@@ -49,6 +49,7 @@ export class Mamoru {
   private ctx: ExtensionContext;
   private roster: Roster;
   private config: MamoruConfig;
+  private teammateDir: string;
 
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private status: AgentStatus = "available";
@@ -67,6 +68,7 @@ export class Mamoru {
     ctx: ExtensionContext;
     roster: Roster;
     config: MamoruConfig;
+    teammateDir?: string;
   }) {
     this.db = opts.db;
     this.sessionId = opts.sessionId;
@@ -77,6 +79,7 @@ export class Mamoru {
     this.ctx = opts.ctx;
     this.roster = opts.roster;
     this.config = opts.config;
+    this.teammateDir = opts.teammateDir ?? "";
   }
 
   // ── Public API ──────────────────────────────────────────────────
@@ -170,6 +173,11 @@ export class Mamoru {
     return this.sessionId;
   }
 
+  /** Get this agent's detail directory for storing task output files. */
+  getTeammateDir(): string {
+    return this.teammateDir;
+  }
+
   /** Get the full event log (for the /mamoru overlay). */
   getEventLog(): MamoruEventLog[] {
     return this.eventLog;
@@ -201,6 +209,11 @@ export class Mamoru {
 
     if (this.persona) {
       additions += `\n\nYou are "${this.persona.name}". ${this.persona.description}`;
+    }
+
+    if (this.teammateDir) {
+      additions += `\n\nYour detail file directory: ${this.teammateDir}`;
+      additions += `\nWhen producing output files for tasks (reports, reviews, specs, etc.), always write them to this directory. Reference the absolute path in the "detail" field of your send_message call.`;
     }
 
     // Inject known teammates into system prompt (they may have joined before

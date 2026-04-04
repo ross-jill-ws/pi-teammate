@@ -595,6 +595,13 @@ parameters: Type.Object({
 
 The tool's `description` is **dynamically rewritten** by MAMORU whenever the roster changes, via `pi.registerTool()` re-registration. The LLM sees the current teammate list directly in the tool description.
 
+**Auto-fill for task replies:** When sending `task_done`, `task_fail`, `task_update`, or `task_clarify` without `to` or `task_id`, the tool auto-fills from MAMORU's `activeTask`. This ensures replies always go to the right agent, even if the LLM omits the fields.
+
+**System prompt injection:** MAMORU injects context into every LLM turn via `before_agent_start`:
+1. **Persona** from `persona.yaml`
+2. **Roster** — all known teammates with session_ids (handles late joiners who missed `agent_join` broadcasts due to cursor skip-to-MAX)
+3. **Active task** — requester's name, session_id, and task_id with explicit `to=`/`task_id=` reply instructions
+
 MAMORU handles outbound status transitions:
 - `task_done` or `task_fail` → set status → `available`, clear `activeTaskId`
 - `task_update` or `task_clarify` → no status change
@@ -825,17 +832,21 @@ pi.on("session_start", async (_event, ctx) => {
 `bootstrapMamoru` handles the `--team-new` logic:
 ```ts
 function bootstrapMamoru(ctx, channel, agentName, forceNew?) {
-  const dbPath = getDbPath(channel);
+  const sessionId = ctx.sessionManager.getSessionId();
 
-  // --team-new: delete existing DB and start clean
-  if (forceNew && existsSync(dbPath)) {
-    unlinkSync(dbPath);          // main DB
-    try { unlinkSync(dbPath + "-wal"); } catch {}  // WAL file
-    try { unlinkSync(dbPath + "-shm"); } catch {}  // shared memory
-    console.log(`[teammate] Deleted existing channel DB: ${dbPath}`);
+  // --team-new: delete entire channel directory and start clean
+  if (forceNew) {
+    const channelBase = getChannelBaseDir(channel);
+    if (existsSync(channelBase)) {
+      rmSync(channelBase, { recursive: true, force: true });
+    }
   }
 
-  // Create if not exists, then open + register + start MAMORU
+  // Resolve channel: find existing or create new (this agent becomes builder)
+  const resolved = resolveChannel(channel, sessionId);
+  // Create teammate detail directory
+  const teammateDir = getTeammateDir(channel, resolved.builderSessionId, sessionId);
+  // Open DB, register agent, start MAMORU with teammateDir
   ...
 }
 ```
@@ -1037,7 +1048,11 @@ These tests simulate multiple MAMORU instances sharing one `:memory:` SQLite DB,
 This is a **pre-release** extension. No backward compatibility with the current schema is needed.
 
 - Phase 1 introduces a new `initSchema()` that creates the new tables
-- Old `.db` files won't work — users should delete `~/.pi/pi-teammate/` (formerly `~/.pi/pi-agent-talk/`) and recreate channels
+- Old `.db` files won't work — delete `~/.pi/pi-teammate/` and recreate channels
+- Directory layout: `~/.pi/pi-teammate/<channel>/<builder_session_id>/team.db`
+- Each teammate gets a detail directory: `~/.pi/pi-teammate/<channel>/<builder_session_id>/<teammate_session_id>/`
+- Path helpers in `extensions/paths.ts`: `resolveChannel()`, `findBuilderSessionId()`, `getTeammateDir()`
+- `--team-new` deletes the entire `<channel>/` directory (not just the `.db` file)
 - Add a version marker to the DB (e.g., `PRAGMA user_version = 2`) so future migrations can detect schema version
 
 ---

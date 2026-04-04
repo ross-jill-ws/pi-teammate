@@ -112,6 +112,31 @@ CREATE TABLE agent_cursors (
 );
 ```
 
+### Directory Layout
+
+All team data is stored under `~/.pi/pi-teammate/`:
+
+```
+~/.pi/pi-teammate/
+└── <channel>/                          # e.g. "apollo"
+    └── <builder_session_id>/           # session ID of the agent who created the channel
+        ├── team.db                     # shared SQLite database (WAL mode)
+        ├── <teammate_A_session_id>/    # detail files produced by teammate A
+        │   ├── review-pr123.md
+        │   └── test-results.json
+        └── <teammate_B_session_id>/    # detail files produced by teammate B
+            └── refactor-spec.md
+```
+
+- The **builder** is the first agent who creates the channel. Its session_id becomes part of the path.
+- Other agents **discover** the channel by scanning `~/.pi/pi-teammate/<channel>/` for a subdirectory containing `team.db`.
+- Each teammate gets a dedicated directory for storing **detail files** (referenced by the `detail` field in message payloads). This ensures file outputs are organized per-agent and accessible to all teammates.
+- `--team-new` deletes the entire `<channel>/` directory and starts clean.
+
+### Cursor Initialization
+
+When a new agent joins an existing channel, `initCursor` sets `last_read_id` to `MAX(message_id)` — skipping all historical messages. This prevents replay of old messages from before the agent joined. The roster is populated from the `agents` table directly (not from broadcast messages), and existing teammates are injected into the system prompt so the LLM has full context from the start.
+
 ### DM vs Broadcast
 
 - **Direct Message (DM):** `to_agent` is set to a specific `session_id`.
@@ -450,6 +475,14 @@ MAMORU handles heartbeat in two ways:
 
 An `inactive` agent is excluded from task routing (removed from `send_message` tool description). If the agent comes back online, its MAMORU updates the heartbeat, sets status back to `available`, and broadcasts `agent_status_change`.
 
+### System Prompt Injection
+
+MAMORU injects context into every LLM turn via `before_agent_start`:
+
+1. **Persona**: Agent name and description from `persona.yaml`.
+2. **Roster**: All known teammates with session_ids and descriptions. This handles the case where late joiners miss `agent_join` broadcasts due to cursor skip-to-MAX.
+3. **Active task context**: When busy, includes the requester's name, session_id, and task_id — with explicit `to=` and `task_id=` instructions for the reply.
+
 ---
 
 ## 6. Task Timeout
@@ -506,9 +539,11 @@ send_message({ to: "abc123", event: "task_req", content: "Review PR #123 for sec
 
 When `send_message` receives `event: "task_req"`, it automatically:
 1. Validates the target is in the roster
-2. Sets `task_id = message_id` (self-referencing)
-3. Registers the outbound task for timeout tracking
-4. Prevents self-delegation
+2. Prevents self-delegation
+3. Sets `task_id = message_id` (self-referencing)
+4. Registers the outbound task for timeout tracking
+
+**Auto-fill for task replies:** When sending `task_done`, `task_fail`, `task_update`, or `task_clarify` without `to` or `task_id`, the tool auto-fills from MAMORU's `activeTask`. This ensures replies always go to the right agent, even if the LLM omits the fields.
 
 If the chosen agent is busy (race condition between poll cycles), MAMORU auto-rejects with `task_reject` and the LLM picks another agent on the next turn.
 
@@ -516,7 +551,20 @@ If **no agents** are available, the LLM can see that from the tool description a
 
 ---
 
-## 8. Resolved Design Decisions
+## 8. CLI Flags
+
+```bash
+pi --team-channel apollo --agent-name "Planner" --team-new   # first agent, clean start
+pi --team-channel apollo --agent-name "Developer"              # joins existing channel
+pi --team-channel apollo --agent-name "Reviewer"               # joins existing channel
+```
+
+- `--team-channel` + `--agent-name` must be used together.
+- `--team-new` deletes the entire channel directory and starts clean. Only the first agent should use it.
+
+---
+
+## 9. Resolved Design Decisions
 
 | # | Question | Decision |
 |---|----------|----------|
@@ -524,4 +572,8 @@ If **no agents** are available, the LLM can see that from the tool description a
 | 2 | Sub-delegation / chaining? | No chaining. Worker becomes a new requester with a fresh `task_req`. See §4.4. |
 | 3 | Message retention? | Keep all data until the mission is complete. Cleanup is out of scope — handled externally or by deleting the SQLite file. |
 | 4 | Concurrent task limits? | One task per agent. Use multiple same-role agents for parallelism. MAMORU auto-rejects when busy. See §5 and §7. |
-| 5 | Detail file lifecycle? | Out of scope. Can be addressed later by a cleanup extension or convention. |
+| 5 | Detail file lifecycle? | Out of scope. Files stored in per-teammate directories. |
+| 6 | How many tools? | One: `send_message`. Handles `task_req` + all other events. |
+| 7 | Delivery mode? | New `task_req` (`task_id == message_id`) → auto-handled. Everything else → `steer`. |
+| 8 | Late joiner context? | Cursor skips to MAX. Roster from DB. Teammates injected into system prompt. |
+| 9 | Task reply routing? | Auto-fill `to` and `task_id` from `activeTask` when LLM omits them. |

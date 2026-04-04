@@ -5,9 +5,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import Database from "better-sqlite3";
-import { mkdirSync, existsSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { mkdirSync, existsSync, rmSync } from "node:fs";
 import { initSchema } from "./schema.ts";
 import { loadPersona } from "./persona.ts";
 import { Mamoru } from "./mamoru.ts";
@@ -16,19 +14,7 @@ import { createSendMessageTool } from "./tools/send-message.ts";
 import { registerCommands } from "./commands.ts";
 import { DEFAULT_MAMORU_CONFIG } from "./types.ts";
 import { setupPrefixKeys } from "./prefix-keys.ts";
-
-const BASE_DIR = join(homedir(), ".pi", "pi-teammate");
-
-function getDbPath(channelName: string): string {
-  return join(BASE_DIR, `${channelName}.db`);
-}
-
-function openDb(channelName: string): Database.Database {
-  const dbPath = getDbPath(channelName);
-  const db = new Database(dbPath);
-  initSchema(db);
-  return db;
-}
+import { resolveChannel, getChannelBaseDir, getTeammateDir } from "./paths.ts";
 
 export default function (pi: ExtensionAPI) {
   let mamoru: Mamoru | null = null;
@@ -65,35 +51,44 @@ export default function (pi: ExtensionAPI) {
 
   // ── Bootstrap Helper ────────────────────────────────────────────
   function bootstrapMamoru(ctx: ExtensionContext, channel: string, agentName: string, forceNew?: boolean): void {
-    const dbPath = getDbPath(channel);
+    const sessionId = ctx.sessionManager.getSessionId();
 
-    // --team-new: delete existing DB and start clean
-    if (forceNew && existsSync(dbPath)) {
-      // Also remove WAL and SHM files if present
-      try { unlinkSync(dbPath); } catch {}
-      try { unlinkSync(dbPath + "-wal"); } catch {}
-      try { unlinkSync(dbPath + "-shm"); } catch {}
-      console.log(`[teammate] Deleted existing channel DB: ${dbPath}`);
+    // --team-new: delete entire channel directory and start clean
+    if (forceNew) {
+      const channelBase = getChannelBaseDir(channel);
+      if (existsSync(channelBase)) {
+        rmSync(channelBase, { recursive: true, force: true });
+        console.log(`[teammate] Deleted existing channel: ${channelBase}`);
+      }
     }
 
-    if (!existsSync(dbPath)) {
-      mkdirSync(BASE_DIR, { recursive: true });
-      const tempDb = new Database(dbPath);
+    // Resolve channel: find existing or create new (this agent becomes builder)
+    const resolved = resolveChannel(channel, sessionId);
+
+    if (!resolved.exists) {
+      mkdirSync(resolved.channelDir, { recursive: true });
+      const tempDb = new Database(resolved.dbPath);
       initSchema(tempDb);
       tempDb.close();
+      console.log(`[teammate] Created channel DB: ${resolved.dbPath}`);
     }
+
+    // Create this teammate's detail directory
+    const teammateDir = getTeammateDir(channel, resolved.builderSessionId, sessionId);
 
     if (activeDb) {
       try { activeDb.close(); } catch {}
     }
-    activeDb = openDb(channel);
+    const db = new Database(resolved.dbPath);
+    initSchema(db);
+    activeDb = db;
 
     const persona = loadPersona(ctx.cwd);
     const roster = new Roster();
 
     mamoru = new Mamoru({
       db: activeDb,
-      sessionId: ctx.sessionManager.getSessionId(),
+      sessionId,
       agentName,
       channel,
       persona,
@@ -101,6 +96,7 @@ export default function (pi: ExtensionAPI) {
       ctx,
       roster,
       config: DEFAULT_MAMORU_CONFIG,
+      teammateDir,
     });
     mamoru.start();
   }
