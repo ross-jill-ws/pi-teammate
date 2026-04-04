@@ -1022,13 +1022,35 @@ describe("Mamoru – buildSystemPromptAdditions", () => {
 
   test("adds persona info when persona is set", () => {
     const { mamoru } = createMamoru({
-      persona: { name: "CodeBot", provider: null, model: null, description: "A coding assistant" },
+      persona: { name: "CodeBot", provider: null, model: null, description: "A coding assistant", systemPrompt: null },
     });
     const result = mamoru.buildSystemPromptAdditions("base prompt");
     expect(result).toBeDefined();
     expect(result!.systemPrompt).toContain("base prompt");
     expect(result!.systemPrompt).toContain('"CodeBot"');
     expect(result!.systemPrompt).toContain("A coding assistant");
+  });
+
+  test("appends persona systemPrompt when set", () => {
+    const { mamoru } = createMamoru({
+      persona: { name: "CodeBot", provider: null, model: null, description: "A coding assistant", systemPrompt: "Always use TypeScript." },
+    });
+    const result = mamoru.buildSystemPromptAdditions("base prompt");
+    expect(result).toBeDefined();
+    expect(result!.systemPrompt).toContain("Always use TypeScript.");
+  });
+
+  test("does not append systemPrompt when null", () => {
+    const { mamoru } = createMamoru({
+      persona: { name: "CodeBot", provider: null, model: null, description: "A helper", systemPrompt: null },
+    });
+    const result = mamoru.buildSystemPromptAdditions("base prompt");
+    expect(result).toBeDefined();
+    // Should only have the persona name/description, no extra systemPrompt
+    const afterPersona = result!.systemPrompt.indexOf("A helper");
+    const remaining = result!.systemPrompt.slice(afterPersona + "A helper".length);
+    // remaining should only contain teammate dir info, not a custom systemPrompt
+    expect(remaining).not.toContain("Always");
   });
 
   test("adds active task info when task is active", () => {
@@ -1048,7 +1070,7 @@ describe("Mamoru – buildSystemPromptAdditions", () => {
 
   test("includes both persona and task info", () => {
     const { mamoru, db } = createMamoru({
-      persona: { name: "WorkerBot", provider: null, model: null, description: "Does work" },
+      persona: { name: "WorkerBot", provider: null, model: null, description: "Does work", systemPrompt: null },
     });
     mamoru.start();
 

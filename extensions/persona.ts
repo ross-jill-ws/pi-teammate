@@ -49,5 +49,8 @@ export function loadPersona(cwd: string): PersonaConfig | null {
     description: description.trim(),
     provider: typeof doc.provider === "string" ? doc.provider : null,
     model: typeof doc.model === "string" ? doc.model : null,
+    systemPrompt: typeof doc.systemPrompt === "string" && doc.systemPrompt.trim() !== ""
+      ? doc.systemPrompt.trim()
+      : null,
   };
 }

@@ -29,8 +29,7 @@
   },
   "pi": {
     "extensions": [
-      "extensions/index.ts",
-      "extensions/talk-prompt-handler.ts"
+      "extensions/index.ts"
     ]
   }
 }

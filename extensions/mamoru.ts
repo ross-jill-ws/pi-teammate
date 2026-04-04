@@ -209,6 +209,9 @@ export class Mamoru {
 
     if (this.persona) {
       additions += `\n\nYou are "${this.persona.name}". ${this.persona.description}`;
+      if (this.persona.systemPrompt) {
+        additions += `\n\n${this.persona.systemPrompt}`;
+      }
     }
 
     if (this.teammateDir) {

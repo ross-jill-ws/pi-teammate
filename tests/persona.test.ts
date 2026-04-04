@@ -29,6 +29,7 @@ describe("loadPersona", () => {
         description: "A helpful assistant",
         provider: "anthropic",
         model: "claude-sonnet-4-5",
+        systemPrompt: null,
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -49,6 +50,7 @@ describe("loadPersona", () => {
         description: "Just a bot",
         provider: null,
         model: null,
+        systemPrompt: null,
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -124,6 +126,56 @@ describe("loadPersona", () => {
       expect(result).not.toBeNull();
       expect(result!.provider).toBeNull();
       expect(result!.model).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("loads systemPrompt when present", () => {
+    const dir = makeTmpDir();
+    try {
+      writePersona(dir, [
+        "name: Dave",
+        "description: A tester",
+        "systemPrompt: Always respond in JSON format.",
+      ].join("\n"));
+
+      const result = loadPersona(dir);
+      expect(result).not.toBeNull();
+      expect(result!.systemPrompt).toBe("Always respond in JSON format.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("systemPrompt defaults to null when omitted", () => {
+    const dir = makeTmpDir();
+    try {
+      writePersona(dir, [
+        "name: Eve",
+        "description: No system prompt",
+      ].join("\n"));
+
+      const result = loadPersona(dir);
+      expect(result).not.toBeNull();
+      expect(result!.systemPrompt).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("systemPrompt is null when empty string", () => {
+    const dir = makeTmpDir();
+    try {
+      writePersona(dir, [
+        "name: Frank",
+        "description: Empty prompt",
+        'systemPrompt: ""',
+      ].join("\n"));
+
+      const result = loadPersona(dir);
+      expect(result).not.toBeNull();
+      expect(result!.systemPrompt).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

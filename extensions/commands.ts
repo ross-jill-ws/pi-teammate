@@ -5,7 +5,8 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { MamoruOverlay } from "./tui/mamoru-overlay.ts";
 import { RosterDetailOverlay, TaskDetailOverlay } from "./tui/detail-overlay.ts";
 import type Database from "better-sqlite3";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { initSchema } from "./schema.ts";
 import { parsePayload, createPayload } from "./types.ts";
 import type { MessageRow, MessagePayload } from "./types.ts";
@@ -375,6 +376,39 @@ export function registerCommands(
       } finally {
         db.close();
       }
+    },
+  });
+
+  // ── /persona-template ───────────────────────────────────────
+  pi.registerCommand("persona-template", {
+    description: "Create a persona.yaml template in the current directory",
+    handler: async (_args, ctx) => {
+      const filePath = join(ctx.cwd, "persona.yaml");
+
+      if (existsSync(filePath)) {
+        ctx.ui.notify(`persona.yaml already exists at ${filePath}. Will not overwrite.`, "error");
+        return;
+      }
+
+      // Derive name from the last segment of cwd, capitalised
+      const dirName = ctx.cwd.split(/[\/\\]/).filter(Boolean).pop() || "Agent";
+      const name = dirName.charAt(0).toUpperCase() + dirName.slice(1);
+
+      // Use current session's provider and model as defaults
+      const provider = (ctx as any).model?.provider || "anthropic";
+      const model = (ctx as any).model?.id || "claude-sonnet-4-5";
+
+      const template = [
+        `name: "${name}"`,
+        `provider: "${provider}"`,
+        `model: "${model}"`,
+        'description: ""',
+        'systemPrompt: ""',
+        '',
+      ].join("\n");
+
+      writeFileSync(filePath, template, "utf-8");
+      ctx.ui.notify(`Created persona.yaml at ${filePath}`, "info");
     },
   });
 

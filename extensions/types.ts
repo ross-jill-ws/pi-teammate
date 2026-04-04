@@ -92,6 +92,7 @@ export interface PersonaConfig {
   provider: string | null;
   model: string | null;
   description: string;
+  systemPrompt: string | null;
 }
 
 // ── Roster Entry (in-memory) ────────────────────────────────────

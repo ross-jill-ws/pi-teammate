@@ -143,10 +143,33 @@ export default function (pi: ExtensionAPI) {
 
   // ── Lifecycle Hooks ─────────────────────────────────────────────
 
-  // Auto-bootstrap from CLI flags on session start
+  // Auto-bootstrap from CLI flags on session start, and apply persona config
   pi.on("session_start", async (_event, ctx) => {
     extensionCtx = ctx;
 
+    // ── Apply persona provider/model on session start (also runs on /reload) ──
+    try {
+      const persona = loadPersona(ctx.cwd);
+      if (persona) {
+        if (persona.provider && persona.model) {
+          const modelObj = ctx.modelRegistry.find(persona.provider, persona.model);
+          if (modelObj) {
+            const ok = await pi.setModel(modelObj);
+            if (ok) {
+              console.log(`[teammate] Applied persona model: ${persona.provider}/${persona.model}`);
+            } else {
+              ctx.ui.notify(`persona.yaml: no API key for ${persona.provider}/${persona.model}`, "warning");
+            }
+          } else {
+            ctx.ui.notify(`persona.yaml: model "${persona.model}" not found for provider "${persona.provider}"`, "warning");
+          }
+        }
+      }
+    } catch (err: any) {
+      ctx.ui.notify(`Failed to load persona.yaml: ${err.message}`, "warning");
+    }
+
+    // ── Auto-join team channel from CLI flags ──
     const channel = pi.getFlag("team-channel") as string | undefined;
     const agentName = pi.getFlag("agent-name") as string | undefined;
 
@@ -163,9 +186,22 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Inject persona + task context into system prompt
-  pi.on("before_agent_start", async (event) => {
-    if (!mamoru) return;
-    return mamoru.buildSystemPromptAdditions(event.systemPrompt);
+  pi.on("before_agent_start", async (event, ctx) => {
+    // When mamoru is active, it handles persona + task additions
+    if (mamoru) {
+      return mamoru.buildSystemPromptAdditions(event.systemPrompt);
+    }
+
+    // When not in a team, still apply persona systemPrompt if present
+    try {
+      const persona = loadPersona(ctx.cwd);
+      if (persona?.systemPrompt) {
+        return { systemPrompt: event.systemPrompt + "\n\n" + persona.systemPrompt };
+      }
+    } catch {
+      // Silently ignore — persona errors are already reported on session_start
+    }
+    return undefined;
   });
 
   // Cleanup on shutdown
