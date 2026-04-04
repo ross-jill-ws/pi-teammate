@@ -17,7 +17,6 @@ import { createSendMessageTool } from "./tools/send-message.ts";
 import { registerCommands } from "./commands.ts";
 import { DEFAULT_MAMORU_CONFIG } from "./types.ts";
 import { setupPrefixKeys } from "./prefix-keys.ts";
-import { RosterDetailOverlay, TaskDetailOverlay } from "./tui/detail-overlay.ts";
 
 const BASE_DIR = join(homedir(), ".pi", "pi-teammate");
 
@@ -121,28 +120,21 @@ export default function (pi: ExtensionAPI) {
           if (actions?.toggleMamoru) actions.toggleMamoru(ctx);
         },
         r: () => {
-          // Show roster detail overlay
-          const roster = mamoru!.getRoster().getAll();
-          ctx.ui.custom<void>(
-            (tui: any, theme: any, _kb: any, done: (result: void) => void) =>
-              new RosterDetailOverlay(roster, mamoru!.getAgentName(), mamoru!.getStatus(), theme, done, tui),
-            { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "100%" } },
-          );
+          const actions = (pi as any).__teammateActions;
+          if (actions?.toggleRoster) actions.toggleRoster(ctx);
         },
         t: () => {
-          // Show task detail overlay
-          ctx.ui.custom<void>(
-            (tui: any, theme: any, _kb: any, done: (result: void) => void) =>
-              new TaskDetailOverlay(mamoru!.getActiveTask(), mamoru!.getOutboundTasks(), theme, done, tui),
-            { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "100%" } },
-          );
+          const actions = (pi as any).__teammateActions;
+          if (actions?.toggleTask) actions.toggleTask(ctx);
         },
       };
     },
     {
       onEsc: () => {
-        // Close MAMORU overlay if it's open (regardless of focus state)
+        // Close any open overlay (regardless of focus state)
         const actions = (pi as any).__teammateActions;
+        if (actions?.closeRoster?.()) return true;
+        if (actions?.closeTask?.()) return true;
         if (actions?.closeMamoru?.()) return true;
         return false;
       },

@@ -3,6 +3,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { MamoruOverlay } from "./tui/mamoru-overlay.ts";
+import { RosterDetailOverlay, TaskDetailOverlay } from "./tui/detail-overlay.ts";
 import type Database from "better-sqlite3";
 import { mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -384,12 +385,15 @@ export function registerCommands(
     },
   });
 
-  // ── /mamoru overlay (toggle) ──────────────────────────────────
+  // ── Non-capturing overlay toggles ─────────────────────────────
   //
-  // The overlay is non-capturing: the user can type in the editor while it's
-  // visible. Ctrl+T → m also toggles. Esc closes when focused.
+  // All overlays are non-capturing: the user can type in the editor while
+  // they're visible. Prefix key (Ctrl+T → letter) toggles focus.
+  // Esc closes regardless of focus state.
   //
   let activeMamoruOverlay: MamoruOverlay | null = null;
+  let activeRosterOverlay: RosterDetailOverlay | null = null;
+  let activeTaskOverlay: TaskDetailOverlay | null = null;
 
   function toggleMamoruOverlay(ctx: any) {
     const mamoru = getMamoru();
@@ -439,14 +443,122 @@ export function registerCommands(
     });
   }
 
+  function toggleRosterOverlay(ctx: any) {
+    const mamoru = getMamoru();
+    if (!mamoru) {
+      ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
+      return;
+    }
+
+    if (activeRosterOverlay) {
+      activeRosterOverlay.toggleFocus();
+      return;
+    }
+
+    ctx.ui.custom<void>(
+      (tui: any, theme: any, _keybindings: any, done: (result: void) => void) => {
+        const overlay = new RosterDetailOverlay(
+          () => mamoru.getRoster().getAll(),
+          mamoru.getAgentName(),
+          () => mamoru.getStatus(),
+          theme,
+          done,
+          tui,
+        );
+        activeRosterOverlay = overlay;
+        return overlay;
+      },
+      {
+        overlay: true,
+        overlayOptions: {
+          anchor: "center",
+          width: "60%",
+          maxHeight: "100%",
+          nonCapturing: true,
+        },
+        onHandle: (handle: any) => {
+          if (activeRosterOverlay) {
+            activeRosterOverlay.setHandle(handle, () => {
+              activeRosterOverlay = null;
+            });
+          }
+        },
+      },
+    ).then(() => {
+      activeRosterOverlay = null;
+    });
+  }
+
+  function toggleTaskOverlay(ctx: any) {
+    const mamoru = getMamoru();
+    if (!mamoru) {
+      ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
+      return;
+    }
+
+    if (activeTaskOverlay) {
+      activeTaskOverlay.toggleFocus();
+      return;
+    }
+
+    ctx.ui.custom<void>(
+      (tui: any, theme: any, _keybindings: any, done: (result: void) => void) => {
+        const overlay = new TaskDetailOverlay(
+          () => mamoru.getActiveTask(),
+          () => mamoru.getOutboundTasks(),
+          theme,
+          done,
+          tui,
+        );
+        activeTaskOverlay = overlay;
+        return overlay;
+      },
+      {
+        overlay: true,
+        overlayOptions: {
+          anchor: "center",
+          width: "60%",
+          maxHeight: "100%",
+          nonCapturing: true,
+        },
+        onHandle: (handle: any) => {
+          if (activeTaskOverlay) {
+            activeTaskOverlay.setHandle(handle, () => {
+              activeTaskOverlay = null;
+            });
+          }
+        },
+      },
+    ).then(() => {
+      activeTaskOverlay = null;
+    });
+  }
+
   // Expose actions for prefix key system
   (pi as any).__teammateActions = {
     toggleMamoru: (ctx: any) => toggleMamoruOverlay(ctx),
-    /** Close the MAMORU overlay if open. Returns true if it was open. */
+    toggleRoster: (ctx: any) => toggleRosterOverlay(ctx),
+    toggleTask: (ctx: any) => toggleTaskOverlay(ctx),
     closeMamoru: (): boolean => {
       if (activeMamoruOverlay) {
         activeMamoruOverlay.close();
         activeMamoruOverlay = null;
+        return true;
+      }
+      return false;
+    },
+    closeRoster: (): boolean => {
+      if (activeRosterOverlay) {
+        activeRosterOverlay.close();
+        activeRosterOverlay = null;
+        return true;
+      }
+      return false;
+    },
+    closeTask: (): boolean => {
+      if (activeTaskOverlay) {
+        activeTaskOverlay.close();
+        activeTaskOverlay = null;
         return true;
       }
       return false;
