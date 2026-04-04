@@ -5,7 +5,6 @@ import { Roster } from "../extensions/roster.ts";
 import { DEFAULT_MAMORU_CONFIG, parsePayload } from "../extensions/types.ts";
 import type { MessageRow } from "../extensions/types.ts";
 import { registerAgent } from "../extensions/db.ts";
-import { createDelegateTaskTool } from "../extensions/tools/delegate-task.ts";
 import { createSendMessageTool } from "../extensions/tools/send-message.ts";
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -49,17 +48,12 @@ function setup(overrides?: { sessionId?: string; channel?: string }) {
     last_heartbeat: Date.now(),
   });
 
-  const delegateTask = createDelegateTaskTool({
-    getMamoru: () => mamoru,
-    getDb: () => db,
-  });
-
   const sendMessage = createSendMessageTool({
     getMamoru: () => mamoru,
     getDb: () => db,
   });
 
-  return { db, pi, ctx, mamoru, roster, delegateTask, sendMessage, sessionId, channel };
+  return { db, pi, ctx, mamoru, roster, sendMessage, sessionId, channel };
 }
 
 function getRow(db: any, messageId: number): MessageRow {
@@ -68,12 +62,12 @@ function getRow(db: any, messageId: number): MessageRow {
 
 const dummyCtx = createMockCtx("dummy") as any;
 
-// ── delegate_task Tests ─────────────────────────────────────────
+// ── task_req via send_message Tests ─────────────────────────────
 
-describe("delegate_task", () => {
+describe("send_message with task_req", () => {
   test("inserts task_req message into DB", async () => {
-    const { delegateTask, db } = setup();
-    const result = await delegateTask.execute("tc1", { to: "remote-1", task: "do something" }, undefined, undefined, dummyCtx);
+    const { sendMessage, db } = setup();
+    const result = await sendMessage.execute("tc1", { to: "remote-1", event: "task_req", content: "do something" }, undefined, undefined, dummyCtx);
     const taskId = (result as any).details.taskId;
     const row = getRow(db, taskId);
     expect(row).toBeDefined();
@@ -82,40 +76,40 @@ describe("delegate_task", () => {
   });
 
   test("sets from_agent to own session_id", async () => {
-    const { delegateTask, db } = setup();
-    const result = await delegateTask.execute("tc1", { to: "remote-1", task: "do something" }, undefined, undefined, dummyCtx);
+    const { sendMessage, db } = setup();
+    const result = await sendMessage.execute("tc1", { to: "remote-1", event: "task_req", content: "do something" }, undefined, undefined, dummyCtx);
     const taskId = (result as any).details.taskId;
     const row = getRow(db, taskId);
     expect(row.from_agent).toBe("self-session");
   });
 
   test("sets to_agent to target session_id", async () => {
-    const { delegateTask, db } = setup();
-    const result = await delegateTask.execute("tc1", { to: "remote-1", task: "do something" }, undefined, undefined, dummyCtx);
+    const { sendMessage, db } = setup();
+    const result = await sendMessage.execute("tc1", { to: "remote-1", event: "task_req", content: "do something" }, undefined, undefined, dummyCtx);
     const taskId = (result as any).details.taskId;
     const row = getRow(db, taskId);
     expect(row.to_agent).toBe("remote-1");
   });
 
   test("sets task_id equal to the new message_id (self-referencing)", async () => {
-    const { delegateTask, db } = setup();
-    const result = await delegateTask.execute("tc1", { to: "remote-1", task: "do something" }, undefined, undefined, dummyCtx);
+    const { sendMessage, db } = setup();
+    const result = await sendMessage.execute("tc1", { to: "remote-1", event: "task_req", content: "do something" }, undefined, undefined, dummyCtx);
     const taskId = (result as any).details.taskId;
     const row = getRow(db, taskId);
     expect(row.task_id).toBe(row.message_id);
   });
 
   test("sets ref_message_id to NULL for new task", async () => {
-    const { delegateTask, db } = setup();
-    const result = await delegateTask.execute("tc1", { to: "remote-1", task: "do something" }, undefined, undefined, dummyCtx);
+    const { sendMessage, db } = setup();
+    const result = await sendMessage.execute("tc1", { to: "remote-1", event: "task_req", content: "do something" }, undefined, undefined, dummyCtx);
     const taskId = (result as any).details.taskId;
     const row = getRow(db, taskId);
     expect(row.ref_message_id).toBeNull();
   });
 
   test("payload has event=task_req and need_reply=true", async () => {
-    const { delegateTask, db } = setup();
-    const result = await delegateTask.execute("tc1", { to: "remote-1", task: "build it" }, undefined, undefined, dummyCtx);
+    const { sendMessage, db } = setup();
+    const result = await sendMessage.execute("tc1", { to: "remote-1", event: "task_req", content: "build it" }, undefined, undefined, dummyCtx);
     const taskId = (result as any).details.taskId;
     const row = getRow(db, taskId);
     const payload = parsePayload(row.payload);
@@ -124,36 +118,49 @@ describe("delegate_task", () => {
   });
 
   test("returns message_id (= task_id) in result for correlation", async () => {
-    const { delegateTask } = setup();
-    const result = await delegateTask.execute("tc1", { to: "remote-1", task: "build it" }, undefined, undefined, dummyCtx);
+    const { sendMessage } = setup();
+    const result = await sendMessage.execute("tc1", { to: "remote-1", event: "task_req", content: "build it" }, undefined, undefined, dummyCtx);
     const taskId = (result as any).details.taskId;
     expect(typeof taskId).toBe("number");
     expect(taskId).toBeGreaterThan(0);
-    // Also check the text content mentions the task id
     const text = (result as any).content[0].text;
     expect(text).toContain(`Task #${taskId}`);
   });
 
   test("rejects if target agent not in roster", async () => {
-    const { delegateTask } = setup();
+    const { sendMessage } = setup();
     expect(
-      delegateTask.execute("tc1", { to: "unknown-agent", task: "build it" }, undefined, undefined, dummyCtx),
+      sendMessage.execute("tc1", { to: "unknown-agent", event: "task_req", content: "build it" }, undefined, undefined, dummyCtx),
     ).rejects.toThrow('Agent "unknown-agent" not found in roster.');
   });
 
-  test("rejects if task content exceeds 500 chars", async () => {
-    const { delegateTask } = setup();
+  test("rejects if content exceeds 500 chars", async () => {
+    const { sendMessage } = setup();
     const longTask = "x".repeat(501);
     expect(
-      delegateTask.execute("tc1", { to: "remote-1", task: longTask }, undefined, undefined, dummyCtx),
+      sendMessage.execute("tc1", { to: "remote-1", event: "task_req", content: longTask }, undefined, undefined, dummyCtx),
     ).rejects.toThrow("exceeds 500 characters");
   });
 
+  test("rejects if no 'to' recipient", async () => {
+    const { sendMessage } = setup();
+    expect(
+      sendMessage.execute("tc1", { event: "task_req", content: "build it" }, undefined, undefined, dummyCtx),
+    ).rejects.toThrow("task_req requires a 'to' recipient");
+  });
+
+  test("rejects self-delegation", async () => {
+    const { sendMessage } = setup();
+    expect(
+      sendMessage.execute("tc1", { to: "self-session", event: "task_req", content: "build it" }, undefined, undefined, dummyCtx),
+    ).rejects.toThrow("Cannot send a task_req to yourself");
+  });
+
   test("sets intent from optional intent parameter", async () => {
-    const { delegateTask, db } = setup();
-    const result = await delegateTask.execute(
+    const { sendMessage, db } = setup();
+    const result = await sendMessage.execute(
       "tc1",
-      { to: "remote-1", task: "review this", intent: "code_review" },
+      { to: "remote-1", event: "task_req", content: "review this", intent: "code_review" },
       undefined, undefined, dummyCtx,
     );
     const taskId = (result as any).details.taskId;
@@ -163,10 +170,10 @@ describe("delegate_task", () => {
   });
 
   test("sets detail from optional detail parameter", async () => {
-    const { delegateTask, db } = setup();
-    const result = await delegateTask.execute(
+    const { sendMessage, db } = setup();
+    const result = await sendMessage.execute(
       "tc1",
-      { to: "remote-1", task: "check file", detail: "/tmp/spec.md" },
+      { to: "remote-1", event: "task_req", content: "check file", detail: "/tmp/spec.md" },
       undefined, undefined, dummyCtx,
     );
     const taskId = (result as any).details.taskId;
@@ -174,9 +181,22 @@ describe("delegate_task", () => {
     const payload = parsePayload(row.payload);
     expect(payload!.detail).toBe("/tmp/spec.md");
   });
+
+  test("task_req does not require task_id parameter (auto-set)", async () => {
+    const { sendMessage, db } = setup();
+    // task_req should work without explicitly passing task_id
+    const result = await sendMessage.execute(
+      "tc1",
+      { to: "remote-1", event: "task_req", content: "do work" },
+      undefined, undefined, dummyCtx,
+    );
+    const taskId = (result as any).details.taskId;
+    const row = getRow(db, taskId);
+    expect(row.task_id).toBe(row.message_id);
+  });
 });
 
-// ── send_message Tests ──────────────────────────────────────────
+// ── send_message (non-task_req) Tests ───────────────────────────
 
 describe("send_message", () => {
   test("inserts message with specified event type into DB", async () => {
@@ -261,13 +281,9 @@ describe("send_message", () => {
 
   test("MAMORU intercepts outbound task_done and sets status to available", async () => {
     const { sendMessage, mamoru, db } = setup();
-    // Simulate being busy by accepting a task
-    // We need mamoru to be busy first
-    // Manually set status via a task acceptance flow
     const { sendTaskReq } = await import("../extensions/db.ts");
     const { createPayload: cp } = await import("../extensions/types.ts");
 
-    // Register remote agent and send a task_req to self
     const taskPayload = cp("task_req", "do work", { need_reply: true });
     const taskReqId = sendTaskReq(db, {
       from_agent: "remote-1",
@@ -278,7 +294,6 @@ describe("send_message", () => {
     mamoru.pollOnce();
     expect(mamoru.getStatus()).toBe("busy");
 
-    // Now send task_done via the tool
     await sendMessage.execute(
       "tc1",
       { to: "remote-1", event: "task_done", task_id: taskReqId, content: "completed" },

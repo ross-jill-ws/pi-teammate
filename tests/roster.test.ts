@@ -147,10 +147,11 @@ describe("Roster", () => {
 
       const desc = roster.buildToolDescription("self-session");
 
-      expect(desc).toContain("Assign a task to a teammate.");
+      expect(desc).toContain("Send a message to a teammate or broadcast to the team.");
       expect(desc).toContain('"Alice" (session: abc123) — available — Frontend dev');
       expect(desc).toContain('"Bob" (session: def456) — available — Backend dev');
-      expect(desc).toContain("Pick an 'available' agent whose description matches the task.");
+      expect(desc).toContain("Pick an 'available' agent whose description matches the request.");
+      expect(desc).toContain("task_req");
     });
 
     test("excludes self from listing", () => {
@@ -170,7 +171,7 @@ describe("Roster", () => {
 
       const desc = roster.buildToolDescription("self-session");
 
-      expect(desc).toBe("Assign a task to a teammate. No teammates are currently online.");
+      expect(desc).toContain("No teammates are currently online.");
     });
 
     test("marks busy agents as busy", () => {

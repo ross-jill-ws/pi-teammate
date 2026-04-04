@@ -12,7 +12,6 @@ import { initSchema } from "./schema.ts";
 import { loadPersona } from "./persona.ts";
 import { Mamoru } from "./mamoru.ts";
 import { Roster } from "./roster.ts";
-import { createDelegateTaskTool } from "./tools/delegate-task.ts";
 import { createSendMessageTool } from "./tools/send-message.ts";
 import { registerCommands } from "./commands.ts";
 import { DEFAULT_MAMORU_CONFIG } from "./types.ts";
@@ -52,22 +51,16 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── Tools ───────────────────────────────────────────────────────
-  const delegateTaskTool = createDelegateTaskTool({
-    getMamoru: () => mamoru,
-    getDb: () => activeDb,
-  });
-  pi.registerTool(delegateTaskTool);
-
   const sendMessageTool = createSendMessageTool({
     getMamoru: () => mamoru,
     getDb: () => activeDb,
   });
   pi.registerTool(sendMessageTool);
 
-  // Update delegate_task description when roster changes
+  // Update send_message description when roster changes
   pi.events.on("teammate_roster_changed", (data: any) => {
     const newDesc = data.roster.buildToolDescription(data.selfSessionId);
-    pi.registerTool({ ...delegateTaskTool, description: newDesc });
+    pi.registerTool({ ...sendMessageTool, description: newDesc });
   });
 
   // ── Bootstrap Helper ────────────────────────────────────────────

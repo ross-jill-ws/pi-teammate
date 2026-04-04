@@ -236,7 +236,7 @@ When MAMORU forwards a message to the LLM via `pi.sendUserMessage()`, it must de
 | `task_id == message_id` | _MAMORU auto-handles_ | New `task_req` — auto-ack/auto-reject. Never reaches `forwardToLlm`. |
 | Everything else | `steer` | If it passed MAMORU's auto-handling and needs LLM attention, it's relevant now. |
 
-That's it — two rules. A new `task_req` is identified by `task_id == message_id` (self-referencing). The LLM already knows agent availability via the `delegate_task` tool roster, so it wouldn't send a task to a busy agent in the first place. Everything that reaches `forwardToLlm` is always `steer`.
+That's it — two rules. A new `task_req` is identified by `task_id == message_id` (self-referencing). The LLM already knows agent availability via the `send_message` tool roster description, so it wouldn't send a task to a busy agent in the first place. Everything that reaches `forwardToLlm` is always `steer`.
 
 ---
 
@@ -386,9 +386,9 @@ MAMORU maintains the agent's status in the `agents` table:
 | `task_req` (status=`available`) | Auto-reply `task_ack`. Set status → `busy`. Set `activeTaskId`. Forward task to LLM. |
 | `task_req` (status=`busy`) | Auto-reply `task_reject` with reason "busy". |
 | `task_cancel` | Interrupt LLM. Auto-reply `task_cancel_ack`. Set status → `available`. Clear `activeTaskId`. |
-| `broadcast` (intent=`agent_join`) | Add agent to in-memory roster. Refresh `delegate_task` tool description. |
-| `broadcast` (intent=`agent_leave`) | Remove agent from roster. Refresh `delegate_task` tool description. |
-| `broadcast` (intent=`agent_status_change`) | Update roster entry. Refresh `delegate_task` tool description. |
+| `broadcast` (intent=`agent_join`) | Add agent to in-memory roster. Refresh `send_message` tool description. |
+| `broadcast` (intent=`agent_leave`) | Remove agent from roster. Refresh `send_message` tool description. |
+| `broadcast` (intent=`agent_status_change`) | Update roster entry. Refresh `send_message` tool description. |
 | `broadcast` / `info_only` (other) | Store in context buffer for LLM awareness. No reply. |
 | `task_ack` | Note acknowledgement. No action needed. |
 | `task_reject` | Forward to LLM so it can choose another agent. |
@@ -417,12 +417,15 @@ When the LLM finishes work or needs to communicate, it uses the `send_message` t
 | `task_clarify` | Send message. Status stays `busy` (awaiting response). |
 | All others | Send message. No status change. |
 
-### Teammate Roster & `delegate_task` Tool
+### Teammate Roster & Dynamic `send_message` Description
 
-MAMORU maintains an **in-memory roster** of all teammates, updated in real-time via broadcast messages and heartbeat checks. This roster drives a dynamic `delegate_task` tool whose description is rewritten whenever the roster changes:
+MAMORU maintains an **in-memory roster** of all teammates, updated in real-time via broadcast messages and heartbeat checks. This roster is embedded into the `send_message` tool's description, which is rewritten whenever the roster changes:
 
 ```
-delegate_task: Assign a task to a teammate.
+send_message: Send a message to a teammate or broadcast to the team.
+Use event 'task_req' to request work or ask a question (expects a response).
+Use task_done/task_fail/task_update/task_clarify for task lifecycle.
+Use broadcast/info_only for announcements (no response expected).
 
 Available teammates:
   - "Code Reviewer 1" (session: abc123) — available — Reviews code for correctness and bugs
@@ -445,7 +448,7 @@ MAMORU handles heartbeat in two ways:
 1. **Passive**: Every time MAMORU processes any message or polls, it updates `last_heartbeat` in the `agents` table.
 2. **Active**: Other agents (or their MAMORUs) can send `ping`. If no `pong` is received within **20 seconds**, the sender's MAMORU marks the target agent as `inactive`.
 
-An `inactive` agent is excluded from task routing (removed from `delegate_task` tool description). If the agent comes back online, its MAMORU updates the heartbeat, sets status back to `available`, and broadcasts `agent_status_change`.
+An `inactive` agent is excluded from task routing (removed from `send_message` tool description). If the agent comes back online, its MAMORU updates the heartbeat, sets status back to `available`, and broadcasts `agent_status_change`.
 
 ---
 
@@ -490,24 +493,22 @@ description: >                         description: >
   for correctness and style.             for correctness and style.
 ```
 
-### Task Routing via `delegate_task`
+### Task Routing via `send_message`
 
-The LLM doesn't need to query the database or reason about routing. It simply calls `delegate_task` with a task description, and the tool description already shows all teammates and their current status (maintained by MAMORU, see §5).
+The LLM doesn't need to query the database or reason about routing. The `send_message` tool description already shows all teammates and their current status (maintained by MAMORU, see §5).
 
 The LLM picks the right agent naturally from context:
 
 ```
-// LLM sees this tool description:
-delegate_task: Assign a task to a teammate.
-
-Available teammates:
-  - "Code Reviewer 1" (session: abc123) — available — Reviews code for correctness and bugs
-  - "Code Reviewer 2" (session: def456) — busy — Reviews code for correctness and bugs
-  - "Tester" (session: ghi789) — available — Writes and runs test suites
-
 // LLM calls:
-delegate_task({ to: "abc123", task: "Review PR #123 for security issues" })
+send_message({ to: "abc123", event: "task_req", content: "Review PR #123 for security issues" })
 ```
+
+When `send_message` receives `event: "task_req"`, it automatically:
+1. Validates the target is in the roster
+2. Sets `task_id = message_id` (self-referencing)
+3. Registers the outbound task for timeout tracking
+4. Prevents self-delegation
 
 If the chosen agent is busy (race condition between poll cycles), MAMORU auto-rejects with `task_reject` and the LLM picks another agent on the next turn.
 

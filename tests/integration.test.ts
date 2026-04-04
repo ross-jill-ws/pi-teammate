@@ -232,7 +232,7 @@ describe("task delegation flow", () => {
       payload: JSON.stringify(taskPayload),
     });
 
-    // Register outbound task on A side (normally done by delegate_task tool)
+    // Register outbound task on A side (normally done by send_message tool with task_req)
     a.mamoru.registerOutboundTask(taskId, "sess-b");
 
     // B accepts

@@ -55,14 +55,20 @@ export class Roster {
     return this.entries.get(sessionId);
   }
 
-  /** Build the dynamic description for the delegate_task tool. Excludes self. */
+  /** Build the dynamic description for the send_message tool. Excludes self. */
   buildToolDescription(selfSessionId: string): string {
     const teammates = [...this.entries.values()].filter(
       (e) => e.session_id !== selfSessionId,
     );
 
     if (teammates.length === 0) {
-      return "Assign a task to a teammate. No teammates are currently online.";
+      return (
+        "Send a message to a teammate or broadcast to the team. " +
+        "Use event 'task_req' to request work or ask a question (expects a response). " +
+        "Use task_done/task_fail/task_update/task_clarify for task lifecycle. " +
+        "Use broadcast/info_only for announcements (no response expected). " +
+        "No teammates are currently online."
+      );
     }
 
     const lines = teammates.map(
@@ -71,12 +77,16 @@ export class Roster {
     );
 
     return [
-      "Assign a task to a teammate.",
+      "Send a message to a teammate or broadcast to the team.",
+      "Use event 'task_req' to request work or ask a question (expects a response).",
+      "Use task_done/task_fail/task_update/task_clarify for task lifecycle.",
+      "Use broadcast/info_only for announcements (no response expected).",
       "",
       "Available teammates:",
       ...lines,
       "",
-      "Pick an 'available' agent whose description matches the task.",
+      "To request work or ask a question, use event 'task_req' with a 'to' recipient.",
+      "Pick an 'available' agent whose description matches the request.",
       "If no suitable agent is available, report that to the user.",
     ].join("\n");
   }

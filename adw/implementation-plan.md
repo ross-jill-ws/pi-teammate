@@ -20,7 +20,7 @@
 | `persona.yaml` loading | Not implemented | **New** |
 | MAMORU guardian loop | Simple polling that emits raw events to `pi.events` | **Major rewrite** — needs event routing, auto-responses, status machine |
 | Teammate roster (in-memory) | Not implemented | **New** |
-| `delegate_task` tool (dynamic description) | `send_agent_message` tool with static description | **Replace** |
+| `send_message` tool (dynamic description with roster) | `send_agent_message` tool with static description | **Replace** |
 | `send_message` tool (LLM → MAMORU outbound) | Partially exists as `send_agent_message` | **Rewrite** to use new payload schema |
 | Event/intent-based payload | Messages use `type` column + raw `content` in payload | **Rewrite** message format |
 | Task lifecycle state machine | Not implemented | **New** |
@@ -43,10 +43,9 @@ extensions/
 ├── types.ts                  # Shared TypeScript types (MessageRow, Payload, Roster, etc.)
 ├── persona.ts                # Load & validate persona.yaml
 ├── mamoru.ts                 # MAMORU guardian loop (poll, route, auto-respond, status)
-├── roster.ts                 # In-memory teammate roster, delegate_task description builder
+├── roster.ts                 # In-memory teammate roster, send_message description builder
 ├── tools/
-│   ├── delegate-task.ts      # delegate_task tool definition (dynamic description)
-│   └── send-message.ts       # send_message tool (LLM tells MAMORU to send outbound messages)
+│   └── send-message.ts       # send_message tool (single tool for ALL agent communication)
 ├── tui/
 │   ├── teammate-widget.ts    # Main widget: team roster + task summary cards
 │   └── detail-overlay.ts     # Popup overlay for full task/roster details (Ctrl+T → r/t)
@@ -58,8 +57,8 @@ tests/
 ├── db.test.ts                # Message CRUD, cursor ops, agent registration
 ├── persona.test.ts           # persona.yaml loading and validation
 ├── mamoru.test.ts            # Event routing, auto-responses, status machine
-├── roster.test.ts            # Roster updates, delegate_task description building
-├── tools.test.ts             # delegate_task and send_message tool execution
+├── roster.test.ts            # Roster updates, send_message description building
+├── tools.test.ts             # send_message tool execution (including task_req)
 ├── timeout.test.ts           # Task timeout, timer reset, cancellation flow
 ├── integration.test.ts       # Multi-agent end-to-end flows (no LLM, mock pi.sendUserMessage)
 └── helpers/
@@ -501,7 +500,7 @@ private forwardToLlm(msg: MessageRow, payload: MessagePayload): void {
 
 ### Phase 4: Roster + Tools
 
-**Goal**: Dynamic teammate discovery, `delegate_task` and `send_message` tools.
+**Goal**: Dynamic teammate discovery, `send_message` tool with roster-driven description.
 
 #### Test Spec: `tests/roster.test.ts`
 
@@ -530,7 +529,7 @@ describe("Roster", () => {
 #### Test Spec: `tests/tools.test.ts`
 
 ```ts
-describe("delegate_task tool", () => {
+describe("send_message with task_req", () => {
   test("inserts task_req message into DB");
   test("sets from_agent to own session_id");
   test("sets to_agent to target session_id");
@@ -539,9 +538,12 @@ describe("delegate_task tool", () => {
   test("payload has event=task_req, need_reply=true");
   test("returns message_id (= task_id) in result for correlation");
   test("rejects if target agent not in roster");
-  test("rejects if task content exceeds 500 chars");
+  test("rejects if content exceeds 500 chars");
+  test("rejects if no 'to' recipient");
+  test("rejects self-delegation");
   test("sets intent from optional intent parameter");
   test("sets detail from optional detail parameter");
+  test("task_req does not require task_id parameter (auto-set)");
 });
 
 describe("send_message tool", () => {
@@ -563,45 +565,39 @@ describe("send_message tool", () => {
 
 Pure in-memory Map with description builder.
 
-#### Implementation: `extensions/tools/delegate-task.ts`
-
-```ts
-parameters: Type.Object({
-  to: Type.String({ description: "session_id of the target agent" }),
-  task: Type.String({ description: "Task description (max 500 chars)" }),
-  detail: Type.Optional(Type.String({ description: "Absolute file path with full task spec" })),
-  intent: Type.Optional(Type.String({ description: "Freeform task type hint, e.g. 'code_review'" }))
-})
-```
-
-The tool's `description` is **dynamically rewritten** by MAMORU whenever roster changes, via `pi.registerTool()` re-registration.
-
 #### Implementation: `extensions/tools/send-message.ts`
 
-This is the general-purpose outbound tool for the LLM. Used for:
+**One tool for ALL agent communication.** The `send_message` tool handles everything:
+- `task_req` (request work or ask a question — expects a response)
 - `task_done` / `task_fail` (completing a task)
 - `task_update` (progress report)
-- `task_clarify` (asking requester for info)
+- `task_clarify` / `task_clarify_res` (clarification flow)
 - `broadcast` / `info_only` (announcements)
-- Any other event the LLM needs to send
 
 ```ts
 parameters: Type.Object({
   to: Type.Optional(Type.String({ description: "session_id of recipient. Omit for broadcast." })),
-  event: Type.String({ description: "Message event type (task_done, task_update, broadcast, etc.)" }),
-  task_id: Type.Optional(Type.Number({ description: "The originating task_req's message_id. Required for all task-related events." })),
-  ref_message_id: Type.Optional(Type.Number({ description: "The specific message this replies to. Usually same as task_id." })),
+  event: Type.String({ description: "Message event type: task_req, task_done, task_fail, task_update, task_clarify, broadcast, info_only, etc." }),
+  task_id: Type.Optional(Type.Number({ description: "Originating task_req's message_id. Required for task_done/fail/update/clarify. Not needed for task_req (auto-set)." })),
+  ref_message_id: Type.Optional(Type.Number({ description: "The specific message this replies to." })),
   content: Type.String({ description: "Message content (max 500 chars)" }),
   detail: Type.Optional(Type.String({ description: "Absolute file path with detailed content" })),
   intent: Type.Optional(Type.String({ description: "Freeform intent hint" })),
 })
 ```
 
-MAMORU hooks the `tool_result` event for `send_message` to manage status transitions:
-- If event is `task_done` or `task_fail` → set status → `available`, clear `activeTaskId`, broadcast `agent_status_change`
-- If event is `task_update` or `task_clarify` → no status change
+**Special handling for `task_req`:** When `event` is `task_req`, the tool automatically:
+1. Validates `to` is required and target is in the roster
+2. Prevents self-delegation
+3. Sets `task_id = message_id` (self-referencing) via `sendTaskReq()`
+4. Registers the outbound task for timeout tracking
+5. Sets `need_reply: true` in the payload
 
-**Why two tools?** `delegate_task` = **start** a task (outbound `task_req`). `send_message` = **everything else** (replies, updates, broadcasts). The LLM sees `delegate_task` with a live roster in the description — it's optimized for "who should I assign this to?" `send_message` is for ongoing communication once a task is in flight.
+The tool's `description` is **dynamically rewritten** by MAMORU whenever the roster changes, via `pi.registerTool()` re-registration. The LLM sees the current teammate list directly in the tool description.
+
+MAMORU handles outbound status transitions:
+- `task_done` or `task_fail` → set status → `available`, clear `activeTaskId`
+- `task_update` or `task_clarify` → no status change
 
 **Deliverable**: `bun test tests/roster.test.ts tests/tools.test.ts` — all green.
 
@@ -616,7 +612,7 @@ MAMORU hooks the `tool_result` event for `send_message` to manage status transit
 ```ts
 describe("task timeout", () => {
   // Use bun's fake timer support
-  test("starts timeout timer when task_req is sent via delegate_task");
+  test("starts timeout timer when task_req is sent via send_message");
   test("timer duration matches config.taskTimeoutMinutes");
   test("timer resets on task_update from worker");
   test("timer resets on task_clarify from worker");
@@ -1054,7 +1050,7 @@ This is a **pre-release** extension. No backward compatibility with the current 
 | **1 — Foundation** | Schema, DB layer | Small | `schema.test.ts`, `db.test.ts` |
 | **2 — Persona** | persona.yaml loader | Small | `persona.test.ts` |
 | **3 — MAMORU Core** | Poll loop, event router, auto-responses, status machine, LLM forwarding | **Large** | `mamoru.test.ts` |
-| **4 — Roster + Tools** | In-memory roster, `delegate_task`, `send_message` | Medium | `roster.test.ts`, `tools.test.ts` |
+| **4 — Roster + Tools** | In-memory roster, `send_message` (single tool) | Medium | `roster.test.ts`, `tools.test.ts` |
 | **5 — Timeout** | Task timeout tracking, timer reset, cancellation | Medium | `timeout.test.ts` |
 | **6 — TUI Widget** | Cards widget, popup overlays | Medium | Manual |
 | **7 — Commands + Wiring** | Slash commands, `index.ts` wiring, `talk-prompt-handler` adaptation | Medium | Manual |
@@ -1085,7 +1081,7 @@ export interface MamoruEventLog {
 }
 ```
 
-Every `processMessage` branch logs a `recv` entry. Every `autoReply` logs a `sent` entry. The `delegate_task` and `send_message` tools call `mamoru.logOutbound()` to log their sent events.
+Every `processMessage` branch logs a `recv` entry. Every `autoReply` logs a `sent` entry. The `send_message` tool calls `mamoru.logOutbound()` to log sent events.
 
 #### 10.2 — `/mamoru` Command + Ctrl+T → m Shortcut
 

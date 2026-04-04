@@ -203,9 +203,18 @@ export class Mamoru {
       additions += `\n\nYou are "${this.persona.name}". ${this.persona.description}`;
     }
 
+    // Inject known teammates into system prompt (they may have joined before
+    // us, so we missed their agent_join broadcasts due to cursor skip-to-MAX).
+    const teammates = this.roster.getAll();
+    if (teammates.length > 0) {
+      const lines = teammates.map(e => `- "${e.agent_name}" (session: ${e.session_id}) — ${e.status} — ${e.description}`).join("\n");
+      additions += `\n\nYour teammates on this channel:\n${lines}`;
+    }
+
     if (this.activeTask) {
-      additions += `\n\nYou are currently working on a task (task #${this.activeTask.taskId}) requested by another agent.`;
-      additions += ` When done, use the send_message tool to report back with event "task_done" or "task_fail".`;
+      const requesterName = this.getAgentDisplayName(this.activeTask.requesterSessionId);
+      additions += `\n\nYou are currently working on a task (task #${this.activeTask.taskId}) requested by "${requesterName}" (session: ${this.activeTask.requesterSessionId}).`;
+      additions += ` When done, use the send_message tool to report back with event "task_done" or "task_fail", setting to="${this.activeTask.requesterSessionId}" and task_id=${this.activeTask.taskId}.`;
       additions += `\nSend periodic "task_update" messages to prevent timeout.`;
     }
 
@@ -300,11 +309,11 @@ export class Mamoru {
               status: agent.status as AgentStatus,
               last_heartbeat: agent.last_heartbeat ?? Date.now(),
             });
-            this.refreshDelegateTaskTool();
+            this.refreshSendMessageTool();
           }
         } else if (payload.intent === "agent_leave") {
           this.roster.remove(msg.from_agent);
-          this.refreshDelegateTaskTool();
+          this.refreshSendMessageTool();
         } else if (payload.intent === "agent_status_change") {
           const agent = getAgentBySession(this.db, msg.from_agent);
           if (agent) {
@@ -315,7 +324,7 @@ export class Mamoru {
               status: agent.status as AgentStatus,
               last_heartbeat: agent.last_heartbeat ?? Date.now(),
             });
-            this.refreshDelegateTaskTool();
+            this.refreshSendMessageTool();
           }
         } else {
           this.contextBuffer.push(`[${payload.event}] ${payload.content}`);
@@ -430,7 +439,7 @@ export class Mamoru {
     return sessionId;
   }
 
-  /** Log an outbound event from a tool (delegate_task or send_message). */
+  /** Log an outbound event from a tool (send_message). */
   logOutbound(event: string, otherParty: string, taskId: number | null, content: string | null): void {
     this.logEvent("sent", event, otherParty, taskId, content, false);
   }
@@ -454,7 +463,7 @@ export class Mamoru {
     });
   }
 
-  private refreshDelegateTaskTool(): void {
+  private refreshSendMessageTool(): void {
     this.pi.events.emit("teammate_roster_changed", {
       roster: this.roster,
       selfSessionId: this.sessionId,
