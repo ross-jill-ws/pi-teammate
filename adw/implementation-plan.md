@@ -699,37 +699,46 @@ ctx.ui.setWidget("teammate", (tui, theme) => new TeammateWidget(tui, theme, mamo
 
 #### 6.2 — `extensions/tui/detail-overlay.ts`
 
-Popup overlay triggered by **Ctrl+Shift+R** (roster) and **Ctrl+Shift+T** (tasks). Pattern follows `SubagentDetailOverlay`:
+Both roster and task overlays are **non-capturing** — the user can type in the editor while they're visible. They follow the same UX pattern as the MAMORU overlay:
+
+- **`Ctrl+T → r`**: Roster overlay — toggle focus/unfocus, Esc closes
+- **`Ctrl+T → t`**: Task overlay — toggle focus/unfocus, Esc closes
+
+Opened via `commands.ts` toggle functions, wired through `__teammateActions` bridge:
 
 ```ts
-// Register shortcuts
-pi.registerShortcut(Key.ctrlShift("r"), {
-  description: "Show full team roster",
-  handler: async (ctx) => {
-    await ctx.ui.custom<void>(
-      (tui, theme, _kb, done) => new RosterDetailOverlay(mamoru.getRoster(), theme, done),
-      { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } }
+ctx.ui.custom<void>(
+  (tui, theme, _kb, done) => {
+    const overlay = new RosterDetailOverlay(
+      () => mamoru.getRoster().getAll(),  // live getter
+      mamoru.getAgentName(),
+      () => mamoru.getStatus(),           // live getter
+      theme, done, tui,                   // tui for pane-aware sizing
     );
-  }
-});
-
-pi.registerShortcut(Key.ctrlShift("t"), {
-  description: "Show full task list",
-  handler: async (ctx) => {
-    await ctx.ui.custom<void>(
-      (tui, theme, _kb, done) => new TaskDetailOverlay(mamoru.getOutboundTasks(), theme, done),
-      { overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } }
-    );
-  }
-});
+    activeRosterOverlay = overlay;
+    return overlay;
+  },
+  {
+    overlay: true,
+    overlayOptions: { anchor: "center", width: "60%", maxHeight: "100%", nonCapturing: true },
+    onHandle: (handle) => overlay.setHandle(handle, () => { activeRosterOverlay = null; }),
+  },
+);
 ```
 
-**Roster overlay** shows all agents with full descriptions.
-**Task overlay** shows all tasks (active + completed) with full content, detail paths, timestamps, and elapsed timers.
+**Key design decisions:**
+- **Live data via getter functions**: Constructors accept `() => RosterEntry[]` and `() => ActiveTask | null` instead of static snapshots. Data updates in real-time.
+- **1s animation timer**: Auto-refreshes the overlay for live elapsed counters and roster status changes.
+- **Pane-aware sizing**: Overlays read `tui.terminal.rows` and compute `maxHeight` as 80% of actual pane rows, not the full window. Supports scrolling (↑↓/j/k/PgUp/PgDn) when content exceeds viewport.
+- **Focus cycle**: `Ctrl+T r/t` toggles focus/unfocus. Footer shows current state: `[FOCUSED] ↑↓ scroll  Esc close  C-t r unfocus` vs `(live) C-t r focus  Esc close`.
+- **Esc always closes**: Via `onTerminalInput` interception in `prefix-keys.ts`, Esc closes any open overlay regardless of focus state. Priority: roster → task → MAMORU.
 
-Both implement `Focusable` interface and close on Escape/Enter/same-shortcut.
+**Roster overlay** shows self (highlighted) + all teammates with status, description, and last heartbeat.
+**Task overlay** shows active inbound task + all outbound delegated tasks with elapsed timers.
 
-**Deliverable**: Widget renders live in REPL. Ctrl+Shift+R / Ctrl+Shift+T popups work.
+Both implement `Focusable` with `setHandle()`, `toggleFocus()`, `close()` methods.
+
+**Deliverable**: Widget renders live in REPL. Ctrl+T r/t overlays work with non-capturing focus.
 
 ---
 
@@ -762,7 +771,7 @@ Both implement `Focusable` interface and close on Escape/Enter/same-shortcut.
 
 #### 7.2 — CLI Flags for Programmatic Startup
 
-Two CLI flags allow users to start agents programmatically without manual `/team-*` commands — ideal for scripting multiple teammates in iTerm tabs or tmux panes:
+Three CLI flags allow users to start agents programmatically without manual `/team-*` commands — ideal for scripting multiple teammates in iTerm tabs or tmux panes:
 
 ```bash
 # Start a code reviewer agent on the "project-alpha" channel
@@ -770,6 +779,9 @@ pi --team-channel project-alpha --agent-name "Code Reviewer"
 
 # Start a tester agent on the same channel
 pi --team-channel project-alpha --agent-name "Tester"
+
+# Start fresh — delete existing channel DB and start clean
+pi --team-channel project-alpha --agent-name "Planner" --team-new
 ```
 
 **Registration:**
@@ -784,51 +796,52 @@ pi.registerFlag("agent-name", {
   description: "Agent name for team registration (requires --team-channel)",
   type: "string",
 });
+
+pi.registerFlag("team-new", {
+  description: "Delete existing channel DB and start clean (use with --team-channel)",
+  type: "boolean",
+  default: false,
+});
 ```
 
 **Auto-bootstrap on `session_start`:**
+
+- `--team-channel` + `--agent-name` are required together (error if only one)
+- `--team-new` deletes the existing `.db`, `-wal`, and `-shm` files before creating a fresh DB
+- Without `--team-new`, existing DB is reused (agent skips old messages via cursor init at `MAX(message_id)`)
 
 ```ts
 pi.on("session_start", async (_event, ctx) => {
   const channel = pi.getFlag("team-channel") as string | undefined;
   const agentName = pi.getFlag("agent-name") as string | undefined;
+  const forceNew = pi.getFlag("team-new") as boolean | undefined;
 
-  if (!channel && !agentName) return;  // no flags, normal startup
-
+  if (!channel && !agentName) return;
   if (!channel || !agentName) {
     ctx.ui.notify("--team-channel and --agent-name must be used together", "error");
     return;
   }
 
-  // 1. Create channel DB if it doesn't exist
+  bootstrapMamoru(ctx, channel, agentName, forceNew || false);
+});
+```
+
+`bootstrapMamoru` handles the `--team-new` logic:
+```ts
+function bootstrapMamoru(ctx, channel, agentName, forceNew?) {
   const dbPath = getDbPath(channel);
-  if (existsSync(dbPath)) {
-    console.log(`[teammate] Channel "${channel}" already exists, skipping creation`);
-  } else {
-    mkdirSync(BASE_DIR, { recursive: true });
-    const db = new Database(dbPath);
-    initSchema(db);
-    db.close();
-    console.log(`[teammate] Created channel: ${channel}`);
+
+  // --team-new: delete existing DB and start clean
+  if (forceNew && existsSync(dbPath)) {
+    unlinkSync(dbPath);          // main DB
+    try { unlinkSync(dbPath + "-wal"); } catch {}  // WAL file
+    try { unlinkSync(dbPath + "-shm"); } catch {}  // shared memory
+    console.log(`[teammate] Deleted existing channel DB: ${dbPath}`);
   }
 
-  // 2. Auto-register and start MAMORU
-  const persona = loadPersona(ctx.cwd);
-  mamoru = new Mamoru({
-    db: openDb(channel),
-    sessionId: ctx.sessionManager.getSessionId(),
-    channel,
-    agentName,
-    persona,
-    pi,
-    ctx,
-    roster: new Roster(),
-    config: defaultMamoruConfig,
-  });
-  mamoru.start();
-
-  console.log(`[teammate] Joined "${channel}" as "${agentName}"`);
-});
+  // Create if not exists, then open + register + start MAMORU
+  ...
+}
 ```
 
 This means a multi-agent team can be launched with a simple shell script:
@@ -836,9 +849,10 @@ This means a multi-agent team can be launched with a simple shell script:
 ```bash
 #!/bin/bash
 # launch-team.sh — start 3 agents in tmux panes
+# First agent uses --team-new to ensure a clean channel
 tmux new-session -d -s team
 
-tmux send-keys "cd ~/agents/planner && pi --team-channel project-alpha --agent-name Planner" Enter
+tmux send-keys "cd ~/agents/planner && pi --team-channel project-alpha --agent-name Planner --team-new" Enter
 tmux split-window -h
 tmux send-keys "cd ~/agents/developer && pi --team-channel project-alpha --agent-name Developer" Enter
 tmux split-window -v
@@ -846,6 +860,8 @@ tmux send-keys "cd ~/agents/reviewer && pi --team-channel project-alpha --agent-
 
 tmux attach -t team
 ```
+
+Note: Only the **first** agent should use `--team-new` to reset the channel. Subsequent agents join the existing (now clean) DB.
 
 Each agent directory has its own `persona.yaml` and `file-permissions.yaml`.
 
@@ -977,6 +993,9 @@ describe("multi-agent integration", () => {
     test("--agent-name without --team-channel shows error");
     test("auto-bootstrapped agent broadcasts agent_join");
     test("auto-bootstrapped agent appears in other agents' rosters");
+    test("--team-new deletes existing DB and creates fresh one");
+    test("--team-new also removes WAL and SHM files");
+    test("--team-new on non-existing DB just creates normally");
   });
 });
 ```
@@ -1087,21 +1106,23 @@ pi.registerCommand("mamoru", {
 });
 ```
 
-Also registered as **Ctrl+Shift+M** shortcut for quick access. Uses `nonCapturing: true` so the user can type in the editor while the overlay is visible. Ctrl+Shift+M cycles: show (non-capturing) → focus (scrollable) → close. Esc from focused state unfocuses back to editor.
-
 **Shortcut convention**: pi-teammate uses a **prefix key** system (`Ctrl+T` then a letter) to avoid conflicts with all other extensions and terminal apps. This is similar to tmux's `Ctrl+B` prefix:
 
 - `Ctrl+T` → `m` : MAMORU event log overlay (toggle focus/unfocus; Esc closes)
-- `Ctrl+T` → `r` : Roster detail overlay
-- `Ctrl+T` → `t` : Task detail overlay
+- `Ctrl+T` → `r` : Roster detail overlay (toggle focus/unfocus; Esc closes)
+- `Ctrl+T` → `t` : Task detail overlay (toggle focus/unfocus; Esc closes)
 
 After pressing `Ctrl+T`, a status bar hint appears showing available keys. The prefix times out after 1.5 seconds if no second key is pressed. A 150ms debounce after Ctrl+T prevents the key release event from being interpreted as the second key (Kitty keyboard protocol).
 
-MAMORU overlay UX:
-1. `Ctrl+T m` → open (non-capturing, user can type in editor)
-2. `Ctrl+T m` again → enter FOCUSED mode (scrollable with ↑↓/j/k/PgUp/PgDn)
-3. `Ctrl+T m` again → back to unfocused (cycle)
-4. `Esc` → always closes the overlay (works in both focused and unfocused modes)
+**All three overlays share the same UX pattern** (non-capturing with focus toggle):
+1. `Ctrl+T <key>` → open (non-capturing, user can type in editor)
+2. `Ctrl+T <key>` again → enter FOCUSED mode (scrollable with ↑↓/j/k/PgUp/PgDn)
+3. `Ctrl+T <key>` again → back to unfocused (cycle)
+4. `Esc` → always closes the overlay (works in both focused and unfocused modes, via `onTerminalInput` interception)
+
+Esc priority order: roster → task → MAMORU (first open overlay wins).
+
+**Pane-aware sizing**: All overlays read `tui.terminal.rows` to compute viewport height relative to the actual terminal pane, not the full window. This ensures correct rendering in split-pane setups (e.g., tmux horizontal split, iTerm split).
 
 This avoids conflicts with `pi-subagent-in-memory` (`Ctrl+N`), terminal apps, and macOS system shortcuts. Implemented in `extensions/prefix-keys.ts` using `ctx.ui.onTerminalInput()`.
 
@@ -1125,6 +1146,7 @@ A `Focusable` overlay component anchored to the right 1/3 of the terminal, full 
 - **Auto-scroll**: Automatically scrolls to bottom on new events unless user has manually scrolled up. Scrolling back to bottom re-enables auto-scroll.
 - **Live refresh**: 500ms timer checks for new events and triggers re-render
 - **Scrollbar**: Visual scroll position indicator on the right edge when content exceeds viewport
-- **Close**: Esc key
+- **Pane-aware viewport**: Uses `tui.terminal.rows` for viewport height calculation instead of hardcoded values. Works correctly in split terminal panes.
+- **Close**: Esc key (works regardless of focus state)
 
 **No automated tests** — tested manually in REPL.

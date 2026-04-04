@@ -5,7 +5,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import Database from "better-sqlite3";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { initSchema } from "./schema.ts";
@@ -45,6 +45,11 @@ export default function (pi: ExtensionAPI) {
     description: "Agent name for team registration (requires --team-channel)",
     type: "string",
   });
+  pi.registerFlag("team-new", {
+    description: "Delete existing channel DB and start clean (use with --team-channel)",
+    type: "boolean",
+    default: false,
+  });
 
   // ── Tools ───────────────────────────────────────────────────────
   const delegateTaskTool = createDelegateTaskTool({
@@ -66,8 +71,18 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── Bootstrap Helper ────────────────────────────────────────────
-  function bootstrapMamoru(ctx: ExtensionContext, channel: string, agentName: string): void {
+  function bootstrapMamoru(ctx: ExtensionContext, channel: string, agentName: string, forceNew?: boolean): void {
     const dbPath = getDbPath(channel);
+
+    // --team-new: delete existing DB and start clean
+    if (forceNew && existsSync(dbPath)) {
+      // Also remove WAL and SHM files if present
+      try { unlinkSync(dbPath); } catch {}
+      try { unlinkSync(dbPath + "-wal"); } catch {}
+      try { unlinkSync(dbPath + "-shm"); } catch {}
+      console.log(`[teammate] Deleted existing channel DB: ${dbPath}`);
+    }
+
     if (!existsSync(dbPath)) {
       mkdirSync(BASE_DIR, { recursive: true });
       const tempDb = new Database(dbPath);
@@ -157,8 +172,9 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    bootstrapMamoru(ctx, channel, agentName);
-    console.log(`[teammate] Joined "${channel}" as "${agentName}"`);
+    const forceNew = pi.getFlag("team-new") as boolean | undefined;
+    bootstrapMamoru(ctx, channel, agentName, forceNew || false);
+    console.log(`[teammate] Joined "${channel}" as "${agentName}"${forceNew ? " (clean start)" : ""}`);
   });
 
   // Inject persona + task context into system prompt
