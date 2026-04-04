@@ -9,7 +9,7 @@
 | File | Purpose | Status |
 |------|---------|--------|
 | `extensions/index.ts` | Channel/DB management, agent registration, polling, `send_agent_message` tool, slash commands | **Partially usable** — needs significant refactoring |
-| `extensions/talk-prompt-handler.ts` | Listens for `pi_talk_message` events, forwards every message to LLM, auto-replies | **Keep & adapt** — fun chat mode, refactor to work with new framework |
+| `extensions/talk-prompt-handler.ts` | Listens for `pi_talk_message` events, forwards every message to LLM, auto-replies | **Keep & adapt** — fun chat mode with self-contained polling and new schema |
 | `package.json` | Package config with `better-sqlite3` dependency | **Minor updates** needed |
 
 ### Gap Analysis
@@ -50,7 +50,7 @@ extensions/
 │   ├── teammate-widget.ts    # Main widget: team roster + task summary cards
 │   └── detail-overlay.ts     # Popup overlay for full task/roster details (Ctrl+T → r/t)
 ├── commands.ts               # Slash commands (/team-create, /team-join, /team-leave, etc.)
-└── talk-prompt-handler.ts    # Fun mode: 2 agents chatting freely (adapted to new framework)
+└── talk-prompt-handler.ts    # Fun mode: 2 agents chatting endlessly (self-contained polling)
 
 tests/
 ├── schema.test.ts            # Schema creation, WAL mode, table structure
@@ -915,29 +915,22 @@ export default function(pi: ExtensionAPI) {
 
 #### 7.4 — `extensions/talk-prompt-handler.ts` (adapted)
 
-The fun chat mode is refactored to work with the new framework:
+Fun chat mode — two agents talking to each other endlessly. Uses the new schema and self-contained polling.
 
-- Listens for `pi_talk_message` custom events (emitted by MAMORU when forwarding to LLM is needed)
-- Instead of blindly forwarding every message, it now **only activates when MAMORU is not running** (standalone chat mode vs. team mode)
-- When MAMORU is active, it handles LLM forwarding — `talk-prompt-handler` stays out of the way
-- When MAMORU is NOT active (e.g., agent registered on channel but not in team mode), `talk-prompt-handler` provides the simple 2-agent chat experience
+- **Dormant when MAMORU is active** — MAMORU handles all message routing in team mode.
+- **Self-contained polling** — has its own 1s poll loop instead of relying on `pi_talk_message` events. Start via `pi.events.emit("talk_start", { db, sessionId, channel })`.
+- **Conversation loop**: Agent A sends → Agent B polls, sees it, forwards to LLM, captures reply, writes back → Agent A polls, sees reply → ∞
+- **Uses new schema** — messages sent as `event: "info_only"` with `intent: "chat"`. No old `type`/`updated_at` columns.
+- **Cursor skip** — inits cursor at `MAX(message_id)` to avoid replaying history.
+- **Overlap guard** — won't send a new message to LLM while it's still generating a reply.
+- **System prompt** — instructs LLM to "always end with a follow-up question or comment that invites a response" so the conversation never dead-ends.
 
 ```ts
-export default function(pi: ExtensionAPI) {
-  let mamoruActive = false;
+// Start talk mode on an existing channel DB
+pi.events.emit("talk_start", { db, sessionId, channel });
 
-  // MAMORU sets this flag when it starts/stops
-  pi.events.on("mamoru_started", () => { mamoruActive = true; });
-  pi.events.on("mamoru_stopped", () => { mamoruActive = false; });
-
-  pi.events.on("pi_talk_message", (data: unknown) => {
-    if (mamoruActive) return; // MAMORU handles it
-
-    // Original fun chat behavior: parse message, inject as user prompt, auto-reply
-    const row = data as TalkMessageEvent;
-    // ... (existing logic, adapted to new payload schema)
-  });
-}
+// Stop talk mode
+pi.events.emit("talk_stop");
 ```
 
 **Deliverable**: Full working system. All commands, widgets, tools, MAMORU wired together.

@@ -1,158 +1,83 @@
 /**
- * Legacy talk-prompt-handler — handles direct "prompt" style messages
- * when MAMORU is NOT active (backward compatibility with the old pi_talk_message flow).
+ * Fun chat mode — keeps a conversation going between two agents.
  *
- * When MAMORU IS active, this handler does nothing — MAMORU handles all routing.
+ * Usage: /start-conversation <to_agent_session_id> <opening message>
+ *
+ * This sends an initial task_req via send_message. When the other agent
+ * replies with task_done, this handler waits 2 seconds then sends another
+ * task_req to keep the conversation going. The loop continues indefinitely.
  */
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-interface TalkMessageEvent {
-  message_id: number;
-  from_agent: string;
-  to_agent: string | null;
-  channel: string;
-  type: string;
-  payload: string;
-  created_at: number;
-  updated_at: number | null;
-  _dbPath: string;
-  _selfSessionId: string;
-  _selfAgentName: string;
-}
-
-interface PendingReply {
-  fromAgent: string;
-  channel: string;
-  dbPath: string;
-  selfSessionId: string;
-  selfAgentName: string;
-}
-
-function extractLatestAssistantReply(messages: unknown[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i] as any;
-    if (msg?.role !== "assistant" || !Array.isArray(msg.content)) continue;
-
-    const text = msg.content
-      .filter((block: any) => block?.type === "text" && typeof block.text === "string")
-      .map((block: any) => block.text.trim())
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-
-    if (text) return text;
-  }
-
-  return "";
-}
-
 export default function (pi: ExtensionAPI) {
-  let pendingReply: PendingReply | null = null;
-  let mamoruActive = false;
+  let chatPartner: string | null = null; // session_id of the agent we're chatting with
+  let active = false;
 
-  // Track MAMORU lifecycle — when active, this handler is dormant
-  pi.events.on("mamoru_started", () => {
-    mamoruActive = true;
+  pi.registerCommand("start-conversation", {
+    description:
+      "Start an endless chat with another agent. Usage: /start-conversation <to_agent_session_id> <opening message>",
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/);
+      const toAgent = parts[0];
+      const content = parts.slice(1).join(" ");
+
+      if (!toAgent || !content) {
+        ctx.ui.notify("Usage: /start-conversation <to_agent_session_id> <message>", "error");
+        return;
+      }
+
+      chatPartner = toAgent;
+      active = true;
+
+      // Send opening message as task_req via the LLM's send_message tool isn't needed —
+      // we can just tell the LLM to send it
+      pi.sendUserMessage(
+        `Send a task_req to agent "${toAgent}" with this message: ${content}`
+      );
+
+      ctx.ui.notify(`Conversation started with ${toAgent}.`, "info");
+    },
   });
 
-  pi.events.on("mamoru_stopped", () => {
-    mamoruActive = false;
+  pi.registerCommand("stop-conversation", {
+    description: "Stop the ongoing chat conversation.",
+    handler: async (_args, ctx) => {
+      active = false;
+      chatPartner = null;
+      ctx.ui.notify("Conversation stopped.", "info");
+    },
   });
 
-  pi.events.on("pi_talk_message", (data: unknown) => {
-    // When MAMORU is active, it handles all message routing
-    if (mamoruActive) return;
-
-    const row = data as TalkMessageEvent;
-    if (row.type !== "prompt") return;
-
-    let content: string | undefined;
-    try {
-      const parsed = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
-      content = parsed?.content;
-    } catch {
-      return;
-    }
-
-    if (!content) return;
-
-    // Store reply context before sending the user message
-    pendingReply = {
-      fromAgent: row.from_agent,
-      channel: row.channel,
-      dbPath: row._dbPath,
-      selfSessionId: row._selfSessionId,
-      selfAgentName: row._selfAgentName,
-    };
-
-    pi.sendUserMessage(content);
-  });
-
-  pi.on("before_agent_start", async (event) => {
-    // Only inject reply-mode prompt when MAMORU is NOT active
-    if (mamoruActive) return;
-    if (!pendingReply) return;
-
-    return {
-      systemPrompt:
-        `${event.systemPrompt}\n\n` +
-        `You are in a direct chat conversation with another agent named ${pendingReply.fromAgent}. ` +
-        `Your next assistant message will be sent back to them as-is. ` +
-        `Write exactly one natural chat reply. ` +
-        `Requirements: ` +
-        `1) answer their latest message directly, ` +
-        `2) sound like a normal person in conversation, ` +
-        `3) keep it concise unless detail is genuinely needed, ` +
-        `4) if helpful, end with one natural follow-up question to keep the conversation going, ` +
-        `5) do not include analysis, tool chatter, file paths, markdown framing, or labels like "Reply:".`,
-    };
-  });
-
+  // Watch for task_done from our chat partner — send another message after 2s
   pi.on("agent_end", async (event, ctx) => {
-    // Only auto-reply when MAMORU is NOT active
-    if (mamoruActive) return;
-    if (!pendingReply) return;
+    if (!active || !chatPartner) return;
 
-    const reply = pendingReply;
-    pendingReply = null;
-
+    // Check if the last forwarded message was a task_done from our chat partner
     const messages = event.messages ?? [];
 
-    ctx.ui.setStatus("teammate-reply", `agent_end: ${messages.length} messages`);
+    // Look for a TEAM MESSAGE from the chat partner with task_done in the recent messages
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i] as any;
+      if (msg?.role !== "user" || !Array.isArray(msg.content)) continue;
 
-    const responseText = extractLatestAssistantReply(messages);
-    if (!responseText) {
-      ctx.ui.notify(
-        `teammate-reply: No assistant text found in ${messages.length} messages (roles: ${messages.map((m: any) => m.role).join(", ")})`,
-        "warning",
-      );
-      return;
-    }
+      const text = msg.content
+        .filter((b: any) => b?.type === "text")
+        .map((b: any) => b.text)
+        .join("");
 
-    // Insert reply message into the channel DB
-    try {
-      const Database = (await import("better-sqlite3")).default;
-      const db = new Database(reply.dbPath);
-      db.pragma("journal_mode = WAL");
-      db.pragma("foreign_keys = OFF");
-
-      const now = Date.now();
-      db.prepare(
-        `INSERT INTO messages (from_agent, to_agent, channel, type, payload, created_at, updated_at)
-         VALUES (?, ?, ?, 'prompt', ?, ?, ?)`,
-      ).run(
-        reply.selfSessionId,
-        reply.fromAgent,
-        reply.channel,
-        JSON.stringify({ content: responseText }),
-        now,
-        now,
-      );
-
-      db.close();
-      ctx.ui.notify(`Reply sent to ${reply.fromAgent}`, "info");
-    } catch (err: any) {
-      ctx.ui.notify(`teammate-reply DB error: ${err.message}`, "error");
+      if (text.includes("task_done") && text.includes(chatPartner)) {
+        // Wait 2 seconds then continue the conversation
+        setTimeout(() => {
+          if (!active || !chatPartner) return;
+          pi.sendUserMessage(
+            `Continue the conversation with agent "${chatPartner}". ` +
+            `Send them another task_req with a natural follow-up message. ` +
+            `Be conversational — ask a question, share a thought, or respond to what they said. ` +
+            `Keep it concise and fun.`
+          );
+        }, 2000);
+        return;
+      }
     }
   });
 }
