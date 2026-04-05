@@ -269,9 +269,9 @@ export class MamoruOverlay implements Focusable {
     const viewportHeight = Math.max(5, termRows - headerFooterLines);
     const totalContent = allContentLines.length;
 
-    // Clamp scroll offset
+    // Auto-scroll to bottom when user hasn't manually scrolled up
     const maxScroll = Math.max(0, totalContent - viewportHeight);
-    if (this.scrollOffset === Infinity || this.scrollOffset > maxScroll) {
+    if (!this.userScrolled || this.scrollOffset === Infinity || this.scrollOffset > maxScroll) {
       this.scrollOffset = maxScroll;
     }
 

@@ -245,22 +245,45 @@ export class Mamoru {
   /** Execute one poll cycle. Public for testability. */
   pollOnce(): void {
     const messages = getUnreadMessages(this.db, this.sessionId, this.channel);
-    if (messages.length === 0) return;
 
-    let lastId = 0;
-    for (const msg of messages) {
-      const payload = parsePayload(msg.payload);
-      if (!payload) continue;
+    if (messages.length > 0) {
+      let lastId = 0;
+      for (const msg of messages) {
+        const payload = parsePayload(msg.payload);
+        if (!payload) continue;
 
-      this.processMessage(msg, payload);
+        this.processMessage(msg, payload);
 
-      if (msg.message_id > lastId) {
-        lastId = msg.message_id;
+        if (msg.message_id > lastId) {
+          lastId = msg.message_id;
+        }
+      }
+
+      if (lastId > 0) {
+        advanceCursor(this.db, this.sessionId, this.channel, lastId);
       }
     }
 
-    if (lastId > 0) {
-      advanceCursor(this.db, this.sessionId, this.channel, lastId);
+    // Refresh roster statuses from DB every poll cycle,
+    // so we pick up status changes made by other agents' MAMORUs.
+    this.refreshRosterStatuses();
+  }
+
+  /** Re-read agent statuses from the DB and update roster entries. */
+  private refreshRosterStatuses(): void {
+    let changed = false;
+    for (const entry of this.roster.getAll()) {
+      const agent = getAgentBySession(this.db, entry.session_id);
+      if (agent && agent.status !== entry.status) {
+        this.roster.update({
+          ...entry,
+          status: agent.status as AgentStatus,
+        });
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.refreshSendMessageTool();
     }
   }
 

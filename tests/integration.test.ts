@@ -32,7 +32,7 @@ function createAgent(db: any, sessionId: string, name: string, description: stri
     sessionId,
     agentName: name,
     channel: CHANNEL,
-    persona: { name, description, provider: null, model: null },
+    persona: { name, description, provider: null, model: null, systemPrompt: null },
     pi: pi as any,
     ctx: ctx as any,
     roster,
@@ -324,6 +324,94 @@ describe("task delegation flow", () => {
       typeof m.content === "string" && m.content.includes("task_reject"),
     );
     expect(rejectForwarded.length).toBe(1);
+
+    a.mamoru.stop();
+    b.mamoru.stop();
+    db.close();
+  });
+});
+
+// ── Status Broadcast Propagation ────────────────────────────────
+
+describe("status broadcast propagation", () => {
+  test("when B becomes busy, A and C see B as busy in their rosters", () => {
+    const db = createSharedDb();
+    const a = createAgent(db, "sess-a", "A", "Planner");
+    const b = createAgent(db, "sess-b", "B", "Developer");
+    const c = createAgent(db, "sess-c", "C", "Tester");
+
+    a.mamoru.start();
+    b.mamoru.start();
+    c.mamoru.start();
+
+    // Discover each other
+    a.mamoru.pollOnce();
+    b.mamoru.pollOnce();
+    c.mamoru.pollOnce();
+    // Second round so everyone sees everyone
+    a.mamoru.pollOnce();
+    b.mamoru.pollOnce();
+    c.mamoru.pollOnce();
+
+    // Verify initial state: all see each other as available
+    expect(a.roster.get("sess-b")?.status).toBe("available");
+    expect(c.roster.get("sess-b")?.status).toBe("available");
+
+    // A sends task_req to B → B becomes busy
+    const taskPayload = createPayload("task_req", "Do something");
+    sendTaskReq(db, {
+      from_agent: "sess-a",
+      to_agent: "sess-b",
+      channel: CHANNEL,
+      payload: JSON.stringify(taskPayload),
+    });
+    b.mamoru.pollOnce();
+    expect(b.mamoru.getStatus()).toBe("busy");
+
+    // A and C poll — they should see B's status broadcast
+    a.mamoru.pollOnce();
+    c.mamoru.pollOnce();
+
+    expect(a.roster.get("sess-b")?.status).toBe("busy");
+    expect(c.roster.get("sess-b")?.status).toBe("busy");
+
+    a.mamoru.stop();
+    b.mamoru.stop();
+    c.mamoru.stop();
+    db.close();
+  });
+
+  test("when B finishes task and becomes available, others see the update", () => {
+    const db = createSharedDb();
+    const a = createAgent(db, "sess-a", "A", "Planner");
+    const b = createAgent(db, "sess-b", "B", "Developer");
+
+    a.mamoru.start();
+    b.mamoru.start();
+
+    // Discover
+    a.mamoru.pollOnce();
+    b.mamoru.pollOnce();
+
+    // B accepts a task and becomes busy
+    const taskPayload = createPayload("task_req", "Build feature");
+    const taskId = sendTaskReq(db, {
+      from_agent: "sess-a",
+      to_agent: "sess-b",
+      channel: CHANNEL,
+      payload: JSON.stringify(taskPayload),
+    });
+    b.mamoru.pollOnce();
+    a.mamoru.pollOnce(); // A sees busy broadcast
+    expect(a.roster.get("sess-b")?.status).toBe("busy");
+
+    // B completes the task via handleOutbound
+    b.mamoru.handleOutbound("task_done", taskId);
+    expect(b.mamoru.getStatus()).toBe("available");
+
+    // A polls — should see B is available again
+    a.mamoru.pollOnce();
+    expect(a.roster.get("sess-b")?.status).toBe("available");
 
     a.mamoru.stop();
     b.mamoru.stop();
