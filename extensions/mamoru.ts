@@ -103,7 +103,8 @@ export class Mamoru {
     this.roster.initFromDb(this.db, this.sessionId);
 
     // Broadcast agent_join
-    const joinPayload = createPayload("broadcast", `${this.agentName} has joined the channel`, {
+    const joinContent = `${this.agentName} has joined the channel`;
+    const joinPayload = createPayload("broadcast", joinContent, {
       intent: "agent_join",
     });
     sendMessage(this.db, {
@@ -114,6 +115,7 @@ export class Mamoru {
       ref_message_id: null,
       payload: JSON.stringify(joinPayload),
     });
+    this.logEvent("sent", "broadcast", "channel", null, joinContent, false);
 
     // Start polling
     this.pollTimer = setInterval(() => this.pollOnce(), this.config.pollIntervalMs);
@@ -128,7 +130,8 @@ export class Mamoru {
     }
 
     // Broadcast agent_leave
-    const leavePayload = createPayload("broadcast", `${this.agentName} has left the channel`, {
+    const leaveContent = `${this.agentName} has left the channel`;
+    const leavePayload = createPayload("broadcast", leaveContent, {
       intent: "agent_leave",
     });
     sendMessage(this.db, {
@@ -139,6 +142,7 @@ export class Mamoru {
       ref_message_id: null,
       payload: JSON.stringify(leavePayload),
     });
+    this.logEvent("sent", "broadcast", "channel", null, leaveContent, false);
 
     // Mark inactive in DB
     updateAgentStatus(this.db, this.sessionId, "inactive");
