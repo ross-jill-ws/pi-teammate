@@ -2,12 +2,23 @@
   "name": "pi-teammate",
   "version": "0.2.0",
   "description": "Pi agent-to-agent team communication via shared SQLite message bus with MAMORU guardian",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ross-jill-ws/pi-teammate.git"
+  },
+  "author": "Ross Z",
   "license": "MIT",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "teammate",
+    "multi-agent",
+    "agent",
+    "collaboration",
+    "mamoru"
   ],
   "files": [
     "extensions",
+    "documents",
     "package.json",
     "README.md"
   ],
@@ -30,6 +41,7 @@
   "pi": {
     "extensions": [
       "extensions/index.ts"
-    ]
+    ],
+    "image": "https://github.com/ross-jill-ws/pi-teammate/blob/main/documents/20260405115019.png?raw=true"
   }
 }
