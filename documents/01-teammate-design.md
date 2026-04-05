@@ -58,10 +58,20 @@ pi --team-channel forex-rt --agent-name developer
 pi --team-channel forex-rt --agent-name tester
 ```
 
-When a teammate joins, it broadcasts an introduction to everyone already on the channel. Existing teammates immediately learn the new member's name and capabilities — no restart required, no config file to update.
+When a teammate joins, it broadcasts an introduction to everyone already on the channel. Existing teammates immediately learn the new member's name and capabilities — no restart required, no config file to update. Likewise, any teammate can **leave** at any time, and the remaining members are notified instantly.
+
+The core idea is **decentralization** — there is no fixed roster, no configuration file that lists all participants, and no orchestrator that must be restarted when the team changes. Just open a new terminal, start a `pi` session, and `/team-join` the channel:
+
+```bash
+# A new specialist joins mid-session from a fresh terminal
+pi --team-channel forex-rt --agent-name accessibility-reviewer
+```
+
+A broadcast goes out, every existing teammate updates its roster, and the new member can start collaborating immediately. If a task turns out to be more complex than expected, simply spin up additional teammates on the fly — the system adapts without any downtime or reconfiguration.
 
 This means you can:
 - **Add specialists mid-session** when the team discovers it needs expertise it doesn't have
+- **Remove teammates** who are no longer needed — they leave, everyone is notified, work continues
 - **Scale horizontally** by adding more agents with the same role (e.g., two code reviewers)
 - **Start small** and grow the team as the task's complexity becomes clear
 
@@ -265,4 +275,5 @@ Looking back at this session, several design choices were critical:
 ## Further Reading
 
 - [Why Build a Teammate System?](00-why-build-teammate.md) — The motivation behind teammate vs. subagent architectures
-- `adw/build-team-message.md` — Full technical specification of the messaging infrastructure, MAMORU internals, and message payload schemas
+- [Communication & Messaging](02-teammate-communication.md) — Full technical specification of the messaging infrastructure, MAMORU internals, and message payload schemas
+- [Command Reference](03-command-reference.md) — Complete manual for CLI flags, slash commands, and TUI shortcuts
