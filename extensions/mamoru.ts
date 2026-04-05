@@ -343,7 +343,6 @@ export class Mamoru {
 
     // Sync in-memory state with DB every poll cycle.
     this.refreshRosterStatuses();
-    this.checkDbCleared();
   }
 
   /** Re-read agent statuses from the DB and update roster entries. */
@@ -392,22 +391,6 @@ export class Mamoru {
         }
         this.pendingRetries.delete(targetSessionId);
       }
-    }
-  }
-
-  /** If messages table is empty, clear in-memory state to match. */
-  private checkDbCleared(): void {
-    const row = this.db.prepare(
-      "SELECT COUNT(*) as cnt FROM messages WHERE channel = ?"
-    ).get(this.channel) as { cnt: number };
-
-    if (row.cnt === 0 && (this.eventLog.length > 0 || this.activeTask || this.outboundTasks.size > 0)) {
-      this.eventLog = [];
-      this.activeTask = null;
-      this.outboundTasks.clear();
-      this.contextBuffer = [];
-      this.status = "available";
-      updateAgentStatus(this.db, this.sessionId, "available");
     }
   }
 
@@ -460,6 +443,7 @@ export class Mamoru {
         break;
 
       case "broadcast":
+        console.log(`[teammate] ${this.agentName}: processMessage broadcast intent=${payload.intent} from=${msg.from_agent} msgId=${msg.message_id}`);
         this.logEvent("recv", "broadcast", msg.from_agent, msg.task_id, payload.content,
           payload.intent !== "agent_join" && payload.intent !== "agent_leave" && payload.intent !== "agent_status_change");
         if (payload.intent === "agent_join") {

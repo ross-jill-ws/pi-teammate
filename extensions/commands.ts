@@ -382,35 +382,6 @@ export function registerCommands(
     },
   });
 
-  // ── /team-clear-all ─────────────────────────────────────────
-  pi.registerCommand("team-clear-all", {
-    description: "Clear all messages and cursors from the team channel DB",
-    handler: async (_args, ctx) => {
-      const mamoru = getMamoru();
-      if (!mamoru) {
-        ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
-        return;
-      }
-
-      const channel = mamoru.getChannel();
-      const dbPath = getDbPath(channel);
-
-      const Database = (await import("better-sqlite3")).default;
-      const db = new Database(dbPath);
-
-      try {
-        db.exec("DELETE FROM agent_cursors");
-        db.exec("DELETE FROM messages");
-        db.exec("DELETE FROM agents WHERE status = 'inactive'");
-        ctx.ui.notify(`Cleared all messages and cursors for channel "${channel}".`, "info");
-      } finally {
-        db.close();
-      }
-
-      mamoru.clearEventLog();
-    },
-  });
-
   // ── /persona-template ───────────────────────────────────────
   pi.registerCommand("persona-template", {
     description: "Create a persona.yaml template in the current directory",

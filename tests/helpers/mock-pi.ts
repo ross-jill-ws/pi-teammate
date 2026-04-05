@@ -181,7 +181,7 @@ export function createMockCtx(sessionId?: string): MockCtx {
   const widgets = new Map<string, any>();
   const statuses = new Map<string, string | undefined>();
 
-  return {
+  const ctx: MockCtx = {
     cwd: "/tmp/test",
     notifications,
     aborted: false,
@@ -221,6 +221,7 @@ export function createMockCtx(sessionId?: string): MockCtx {
       },
     },
   };
+  return ctx;
 }
 
 // ── Test Database ───────────────────────────────────────────────
