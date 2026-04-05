@@ -15,7 +15,7 @@ import type {
   OutboundTask,
   PersonaConfig,
 } from "./types.ts";
-import { parsePayload, createPayload, isNewTaskReq } from "./types.ts";
+import { parsePayload, createPayload, isNewTaskReq, MAX_CONTENT_WORDS } from "./types.ts";
 import {
   sendMessage,
   getUnreadMessages,
@@ -182,6 +182,13 @@ export class Mamoru {
     return this.teammateDir;
   }
 
+  /** Get the content word limit from persona, or the default. */
+  getContentWordLimit(): number {
+    const custom = this.persona?.contentWordLimit;
+    if (typeof custom === "number" && custom > 0) return custom;
+    return MAX_CONTENT_WORDS;
+  }
+
   /** Get the full event log (for the /mamoru overlay). */
   getEventLog(): MamoruEventLog[] {
     return this.eventLog;
@@ -228,7 +235,7 @@ export class Mamoru {
     if (this.teammateDir) {
       additions += `\n\nYour detail file directory: ${this.teammateDir}`;
       additions += `\nIMPORTANT — using the "detail" field in send_message:`;
-      additions += `\n- When sending a task_req, you MUST include ALL context the recipient needs to complete the task. The "content" field is limited to 20 words and is only a brief summary. Always put full details in the "detail" field (a markdown file path).`;
+      additions += `\n- When sending a task_req, you MUST include ALL context the recipient needs to complete the task. The "content" field is limited to ${this.getContentWordLimit()} words and is only a brief summary. Always put full details in the "detail" field (a markdown file path).`;
       additions += `\n- Write a markdown file to your detail directory (e.g. ${this.teammateDir}/task-brief.md) that contains the full task description, requirements, and references to any relevant files (images, code, screenshots, etc.) using their absolute paths.`;
       additions += `\n- Set the "detail" field to the absolute path of that markdown file.`;
       additions += `\n- For task_done/task_fail responses, also use a detail file to include full results, output files, or reports.`;
@@ -236,7 +243,7 @@ export class Mamoru {
     }
 
     // Message content format rules (the "content" field is spoken aloud via TTS)
-    additions += `\n\nMessage content format rules (max 20 words, will be spoken aloud):`;
+    additions += `\n\nMessage content format rules (max ${this.getContentWordLimit()} words, will be spoken aloud):`;
     additions += `\n- task_req: always start with the recipient's name. e.g. "Designer, please review the homepage layout"`;
     additions += `\n- task_ack: just say "acknowledged" or "roger"`;
     additions += `\n- task_update: always start with the recipient's name + "task status update". e.g. "Developer, task status update, styling fixes applied"`;

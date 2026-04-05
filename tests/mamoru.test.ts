@@ -1129,4 +1129,23 @@ describe("Mamoru – getters", () => {
     const { mamoru } = createMamoru({ roster });
     expect(mamoru.getRoster()).toBe(roster);
   });
+
+  test("getContentWordLimit returns default when persona has no contentWordLimit", () => {
+    const { mamoru } = createMamoru({
+      persona: { name: "Bot", description: "A bot", provider: null, model: null, systemPrompt: null },
+    });
+    expect(mamoru.getContentWordLimit()).toBe(20);
+  });
+
+  test("getContentWordLimit returns persona's contentWordLimit when set", () => {
+    const { mamoru } = createMamoru({
+      persona: { name: "Bot", description: "A bot", provider: null, model: null, systemPrompt: null, contentWordLimit: 50 },
+    });
+    expect(mamoru.getContentWordLimit()).toBe(50);
+  });
+
+  test("getContentWordLimit returns default when no persona", () => {
+    const { mamoru } = createMamoru();
+    expect(mamoru.getContentWordLimit()).toBe(20);
+  });
 });

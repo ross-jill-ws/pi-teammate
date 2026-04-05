@@ -52,9 +52,10 @@ export function createSendMessageTool(opts: {
         );
       }
 
-      // Validate content length
-      if (countWords(params.content) > MAX_CONTENT_WORDS) {
-        throw new Error(`Content exceeds ${MAX_CONTENT_WORDS} words (got ${countWords(params.content)}). Put details in the 'detail' field.`);
+      // Validate content length (use persona's contentWordLimit if set)
+      const wordLimit = mamoru.getContentWordLimit();
+      if (countWords(params.content) > wordLimit) {
+        throw new Error(`Content exceeds ${wordLimit} words (got ${countWords(params.content)}). Put details in the 'detail' field.`);
       }
 
       // ── task_req: special handling ─────────────────────────────
@@ -83,6 +84,7 @@ export function createSendMessageTool(opts: {
           to_agent: params.to,
           channel: mamoru.getChannel(),
           payload: JSON.stringify(payload),
+          maxContentWords: wordLimit,
         });
 
         // Register outbound task for timeout tracking
@@ -127,6 +129,7 @@ export function createSendMessageTool(opts: {
         task_id: params.task_id ?? null,
         ref_message_id: params.ref_message_id ?? null,
         payload: JSON.stringify(payload),
+        maxContentWords: wordLimit,
       });
 
       // Let MAMORU handle outbound status transitions

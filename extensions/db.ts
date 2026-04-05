@@ -63,9 +63,10 @@ export function sendMessage(
     task_id: number | null;
     ref_message_id: number | null;
     payload: string;
+    maxContentWords?: number;
   },
 ): number {
-  // Validate payload JSON has content field ≤ 20 words
+  // Validate payload JSON has content field within word limit
   let parsed: any;
   try {
     parsed = JSON.parse(msg.payload);
@@ -75,8 +76,9 @@ export function sendMessage(
   if (typeof parsed.content !== "string") {
     throw new Error("payload must have a content field");
   }
-  if (countWords(parsed.content) > MAX_CONTENT_WORDS) {
-    throw new Error(`payload.content must be ≤ ${MAX_CONTENT_WORDS} words (got ${countWords(parsed.content)}). Put details in the 'detail' field.`);
+  const limit = msg.maxContentWords ?? MAX_CONTENT_WORDS;
+  if (countWords(parsed.content) > limit) {
+    throw new Error(`payload.content must be ≤ ${limit} words (got ${countWords(parsed.content)}). Put details in the 'detail' field.`);
   }
 
   const result = db.prepare(`
@@ -102,6 +104,7 @@ export function sendTaskReq(
     to_agent: string | null;
     channel: string;
     payload: string;
+    maxContentWords?: number;
   },
 ): number {
   // Insert with task_id = NULL first
@@ -112,6 +115,7 @@ export function sendTaskReq(
     task_id: null,
     ref_message_id: null,
     payload: msg.payload,
+    maxContentWords: msg.maxContentWords,
   });
 
   // Then update task_id = message_id (self-referencing)

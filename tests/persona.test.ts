@@ -185,6 +185,23 @@ describe("loadPersona", () => {
     }
   });
 
+  test("preserves contentWordLimit as custom property", () => {
+    const dir = makeTmpDir();
+    try {
+      writePersona(dir, [
+        "name: Heidi",
+        "description: A verbose agent",
+        "contentWordLimit: 50",
+      ].join("\n"));
+
+      const result = loadPersona(dir);
+      expect(result).not.toBeNull();
+      expect(result!.contentWordLimit).toBe(50);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("systemPrompt is null when empty string", () => {
     const dir = makeTmpDir();
     try {
