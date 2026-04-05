@@ -1014,10 +1014,15 @@ describe("Mamoru – lifecycle", () => {
 // ── buildSystemPromptAdditions ──────────────────────────────────
 
 describe("Mamoru – buildSystemPromptAdditions", () => {
-  test("returns undefined when no persona and no active task", () => {
+  test("includes content format rules even with no persona and no active task", () => {
     const { mamoru } = createMamoru();
     const result = mamoru.buildSystemPromptAdditions("base prompt");
-    expect(result).toBeUndefined();
+    expect(result).toBeDefined();
+    expect(result!.systemPrompt).toContain("base prompt");
+    expect(result!.systemPrompt).toContain("Message content format rules");
+    expect(result!.systemPrompt).toContain("task_req: always start with the recipient");
+    expect(result!.systemPrompt).toContain("task_ack: just say");
+    expect(result!.systemPrompt).toContain("broadcast: always start with");
   });
 
   test("adds persona info when persona is set", () => {

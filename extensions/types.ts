@@ -51,11 +51,16 @@ export interface MessagePayload {
   event: MessageEvent;
   intent: string | null;
   need_reply: boolean;
-  content: string; // max 500 chars
+  content: string; // max 20 words
   detail: string | null; // absolute file path or null
 }
 
-export const MAX_CONTENT_LENGTH = 500;
+export const MAX_CONTENT_WORDS = 20;
+
+/** Count words in a string (splits on whitespace). */
+export function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
 
 // ── DB Row Types ────────────────────────────────────────────────
 export interface AgentRow {
@@ -93,6 +98,8 @@ export interface PersonaConfig {
   model: string | null;
   description: string;
   systemPrompt: string | null;
+  /** Any additional user-defined properties from persona.yaml. */
+  [key: string]: unknown;
 }
 
 // ── Roster Entry (in-memory) ────────────────────────────────────

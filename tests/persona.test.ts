@@ -164,6 +164,27 @@ describe("loadPersona", () => {
     }
   });
 
+  test("preserves custom user-defined properties", () => {
+    const dir = makeTmpDir();
+    try {
+      writePersona(dir, [
+        "name: Grace",
+        "description: A speaker",
+        'voiceId: "abc123"',
+        'voice: "Rachel"',
+        "customFlag: true",
+      ].join("\n"));
+
+      const result = loadPersona(dir);
+      expect(result).not.toBeNull();
+      expect(result!.voiceId).toBe("abc123");
+      expect(result!.voice).toBe("Rachel");
+      expect(result!.customFlag).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("systemPrompt is null when empty string", () => {
     const dir = makeTmpDir();
     try {

@@ -134,12 +134,12 @@ describe("send_message with task_req", () => {
     ).rejects.toThrow('Agent "unknown-agent" not found in roster.');
   });
 
-  test("rejects if content exceeds 500 chars", async () => {
+  test("rejects if content exceeds 20 words", async () => {
     const { sendMessage } = setup();
-    const longTask = "x".repeat(501);
+    const longTask = Array(21).fill("word").join(" ");
     expect(
       sendMessage.execute("tc1", { to: "remote-1", event: "task_req", content: longTask }, undefined, undefined, dummyCtx),
-    ).rejects.toThrow("exceeds 500 characters");
+    ).rejects.toThrow("exceeds 20 words");
   });
 
   test("rejects if no 'to' recipient", async () => {
@@ -365,15 +365,15 @@ describe("send_message", () => {
     expect(payload!.event).toBe("broadcast");
   });
 
-  test("validates content <= 500 chars", async () => {
+  test("validates content <= 20 words", async () => {
     const { sendMessage } = setup();
-    const longContent = "x".repeat(501);
+    const longContent = Array(21).fill("word").join(" ");
     expect(
       sendMessage.execute(
         "tc1",
         { event: "broadcast", content: longContent },
         undefined, undefined, dummyCtx,
       ),
-    ).rejects.toThrow("exceeds 500 characters");
+    ).rejects.toThrow("exceeds 20 words");
   });
 });

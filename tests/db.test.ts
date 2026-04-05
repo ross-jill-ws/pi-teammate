@@ -254,11 +254,11 @@ describe("sendMessage", () => {
     ).toThrow("payload must have a content field");
   });
 
-  test("rejects payload with content > 500 chars", () => {
+  test("rejects payload with content > 20 words", () => {
     const db = createTestDb();
     registerAgent(db, { session_id: "s1", agent_name: "alice", description: null, provider: null, model: null, cwd: null });
 
-    const longContent = "x".repeat(501);
+    const longContent = Array(21).fill("word").join(" ");
     expect(() =>
       sendMessage(db, {
         from_agent: "s1",
@@ -268,21 +268,21 @@ describe("sendMessage", () => {
         ref_message_id: null,
         payload: JSON.stringify(createPayload("broadcast", longContent)),
       }),
-    ).toThrow("payload.content must be ≤ 500 characters");
+    ).toThrow("payload.content must be ≤ 20 words");
   });
 
-  test("accepts payload with exactly 500 char content", () => {
+  test("accepts payload with exactly 20 words", () => {
     const db = createTestDb();
     registerAgent(db, { session_id: "s1", agent_name: "alice", description: null, provider: null, model: null, cwd: null });
 
-    const content500 = "x".repeat(500);
+    const content20 = Array(20).fill("word").join(" ");
     const id = sendMessage(db, {
       from_agent: "s1",
       to_agent: null,
       channel: "general",
       task_id: null,
       ref_message_id: null,
-      payload: JSON.stringify(createPayload("broadcast", content500)),
+      payload: JSON.stringify(createPayload("broadcast", content20)),
     });
 
     expect(id).toBeGreaterThan(0);

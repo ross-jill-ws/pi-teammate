@@ -224,12 +224,21 @@ export class Mamoru {
     if (this.teammateDir) {
       additions += `\n\nYour detail file directory: ${this.teammateDir}`;
       additions += `\nIMPORTANT — using the "detail" field in send_message:`;
-      additions += `\n- When sending a task_req, you MUST include ALL context the recipient needs to complete the task. The "content" field is limited to 500 chars and is only a summary.`;
+      additions += `\n- When sending a task_req, you MUST include ALL context the recipient needs to complete the task. The "content" field is limited to 20 words and is only a brief summary. Always put full details in the "detail" field (a markdown file path).`;
       additions += `\n- Write a markdown file to your detail directory (e.g. ${this.teammateDir}/task-brief.md) that contains the full task description, requirements, and references to any relevant files (images, code, screenshots, etc.) using their absolute paths.`;
       additions += `\n- Set the "detail" field to the absolute path of that markdown file.`;
       additions += `\n- For task_done/task_fail responses, also use a detail file to include full results, output files, or reports.`;
       additions += `\n- NEVER reference files, images, or attachments only in the "content" text — always put them in the detail file so the recipient can actually access them.`;
     }
+
+    // Message content format rules (the "content" field is spoken aloud via TTS)
+    additions += `\n\nMessage content format rules (max 20 words, will be spoken aloud):`;
+    additions += `\n- task_req: always start with the recipient's name. e.g. "Designer, please review the homepage layout"`;
+    additions += `\n- task_ack: just say "acknowledged" or "roger"`;
+    additions += `\n- task_update: always start with the recipient's name + "task status update". e.g. "Developer, task status update, styling fixes applied"`;
+    additions += `\n- task_done: always start with the recipient's name. e.g. "Developer, code review complete, all good"`;
+    additions += `\n- task_fail: always start with the recipient's name + "we are having a problem". e.g. "Developer, we are having a problem, build failed"`;
+    additions += `\n- broadcast: always start with "Hi everyone". e.g. "Hi everyone, deployment is done"`;
 
     // Inject known teammates into system prompt (they may have joined before
     // us, so we missed their agent_join broadcasts due to cursor skip-to-MAX).
@@ -523,7 +532,7 @@ export class Mamoru {
     content: string | null,
     forwardedToLlm: boolean,
   ): void {
-    this.eventLog.push({
+    const entry: MamoruEventLog = {
       timestamp: Date.now(),
       direction,
       event,
@@ -531,6 +540,13 @@ export class Mamoru {
       taskId,
       content,
       forwardedToLlm,
+    };
+    this.eventLog.push(entry);
+
+    // Emit event so other extensions (e.g. TTS harness) can react immediately
+    this.pi.events.emit("teammate_message", {
+      ...entry,
+      agentName: this.agentName,
     });
   }
 

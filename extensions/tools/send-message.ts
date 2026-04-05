@@ -3,7 +3,7 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@mariozechner/pi-coding-agent";
 import type Database from "better-sqlite3";
 import { sendMessage, sendTaskReq } from "../db.ts";
-import { createPayload, MESSAGE_EVENTS, TASK_ID_REQUIRED_EVENTS, MAX_CONTENT_LENGTH } from "../types.ts";
+import { createPayload, MESSAGE_EVENTS, TASK_ID_REQUIRED_EVENTS, MAX_CONTENT_WORDS, countWords } from "../types.ts";
 import type { MessageEvent } from "../types.ts";
 import type { Mamoru } from "../mamoru.ts";
 
@@ -12,7 +12,7 @@ export const SendMessageParams = Type.Object({
   event: Type.String({ description: "Message event type: task_req (request work or ask a question), task_done, task_fail, task_update, task_clarify, task_clarify_res, broadcast, info_only, etc." }),
   task_id: Type.Optional(Type.Number({ description: "The originating task_req's message_id. Required for task_done, task_fail, task_update, task_clarify, task_clarify_res. Not needed for task_req (auto-set)." })),
   ref_message_id: Type.Optional(Type.Number({ description: "The specific message this replies to. Usually same as task_id." })),
-  content: Type.String({ description: "Message content (max 500 chars)" }),
+  content: Type.String({ description: "Brief summary (max 20 words). Put full details in 'detail' field." }),
   detail: Type.Optional(Type.String({ description: "Absolute file path to a detail markdown file in your teammate directory. REQUIRED for task_req — write a .md file containing full context, requirements, and absolute paths to any referenced files (images, screenshots, code). Also use for task_done/task_fail to include results." })),
   intent: Type.Optional(Type.String({ description: "Freeform intent hint" })),
 });
@@ -29,7 +29,7 @@ export function createSendMessageTool(opts: {
     description:
       "Send a message to a teammate or broadcast to the team. " +
       "Use event 'task_req' to request work or ask a question (expects a response). " +
-      "For task_req: always write a detail markdown file with full context, requirements, and absolute paths to any referenced files (images, screenshots, etc.), then set 'detail' to its path. The 'content' field is just a 500-char summary. " +
+      "For task_req: always write a detail markdown file with full context, requirements, and absolute paths to any referenced files (images, screenshots, etc.), then set 'detail' to its path. The 'content' field is a brief summary (max 20 words). " +
       "Use task_done/task_fail/task_update/task_clarify for task lifecycle. " +
       "Use broadcast/info_only for announcements (no response expected). " +
       "No teammates are currently online.",
@@ -53,8 +53,8 @@ export function createSendMessageTool(opts: {
       }
 
       // Validate content length
-      if (params.content.length > MAX_CONTENT_LENGTH) {
-        throw new Error(`Content exceeds ${MAX_CONTENT_LENGTH} characters.`);
+      if (countWords(params.content) > MAX_CONTENT_WORDS) {
+        throw new Error(`Content exceeds ${MAX_CONTENT_WORDS} words (got ${countWords(params.content)}). Put details in the 'detail' field.`);
       }
 
       // ── task_req: special handling ─────────────────────────────

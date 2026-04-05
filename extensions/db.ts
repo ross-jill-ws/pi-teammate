@@ -4,7 +4,7 @@
  */
 import type Database from "better-sqlite3";
 import type { AgentRow, AgentStatus, MessageRow } from "./types.ts";
-import { MAX_CONTENT_LENGTH } from "./types.ts";
+import { MAX_CONTENT_WORDS, countWords } from "./types.ts";
 
 // ── Agent Functions ─────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ export function sendMessage(
     payload: string;
   },
 ): number {
-  // Validate payload JSON has content field ≤ 500 chars
+  // Validate payload JSON has content field ≤ 20 words
   let parsed: any;
   try {
     parsed = JSON.parse(msg.payload);
@@ -75,8 +75,8 @@ export function sendMessage(
   if (typeof parsed.content !== "string") {
     throw new Error("payload must have a content field");
   }
-  if (parsed.content.length > MAX_CONTENT_LENGTH) {
-    throw new Error(`payload.content must be ≤ ${MAX_CONTENT_LENGTH} characters`);
+  if (countWords(parsed.content) > MAX_CONTENT_WORDS) {
+    throw new Error(`payload.content must be ≤ ${MAX_CONTENT_WORDS} words (got ${countWords(parsed.content)}). Put details in the 'detail' field.`);
   }
 
   const result = db.prepare(`

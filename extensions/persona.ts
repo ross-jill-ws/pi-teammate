@@ -44,6 +44,15 @@ export function loadPersona(cwd: string): PersonaConfig | null {
     throw new Error("persona.yaml: 'description' must be a string");
   }
 
+  // Collect any extra user-defined properties
+  const knownKeys = new Set(["name", "description", "provider", "model", "systemPrompt"]);
+  const extras: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(doc)) {
+    if (!knownKeys.has(k)) {
+      extras[k] = v;
+    }
+  }
+
   return {
     name: name.trim(),
     description: description.trim(),
@@ -52,5 +61,6 @@ export function loadPersona(cwd: string): PersonaConfig | null {
     systemPrompt: typeof doc.systemPrompt === "string" && doc.systemPrompt.trim() !== ""
       ? doc.systemPrompt.trim()
       : null,
+    ...extras,
   };
 }
