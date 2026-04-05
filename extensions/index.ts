@@ -171,12 +171,29 @@ export default function (pi: ExtensionAPI) {
 
     // ── Auto-join team channel from CLI flags ──
     const channel = pi.getFlag("team-channel") as string | undefined;
-    const agentName = pi.getFlag("agent-name") as string | undefined;
+    let agentName = pi.getFlag("agent-name") as string | undefined;
+
+    // Fall back to persona name if --agent-name not provided
+    if (!agentName) {
+      try {
+        const persona = loadPersona(ctx.cwd);
+        if (persona?.name) {
+          agentName = persona.name;
+        }
+      } catch {
+        // persona already loaded above; ignore errors here
+      }
+    }
 
     if (!channel && !agentName) return;
 
-    if (!channel || !agentName) {
-      ctx.ui.notify("--team-channel and --agent-name must be used together", "error");
+    if (!channel) {
+      // agentName from persona but no channel — nothing to join
+      return;
+    }
+
+    if (!agentName) {
+      ctx.ui.notify("--agent-name is required (or set 'name' in persona.yaml)", "error");
       return;
     }
 
