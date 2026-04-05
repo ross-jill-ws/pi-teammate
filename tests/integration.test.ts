@@ -959,4 +959,205 @@ describe("message isolation", () => {
   });
 });
 
+// ── Blocking Retry Flow ──────────────────────────────────────────
+
+describe("blocking retry flow", () => {
+  test("blocking task_req auto-retries when rejected agent becomes available", () => {
+    const db = createSharedDb();
+    const a = createAgent(db, "sess-a", "A", "Requester");
+    const b = createAgent(db, "sess-b", "B", "Worker");
+
+    a.mamoru.start();
+    b.mamoru.start();
+
+    // Discover each other
+    a.mamoru.pollOnce();
+    b.mamoru.pollOnce();
+
+    // Make B busy with a first task
+    const firstPayload = createPayload("task_req", "first task");
+    sendTaskReq(db, {
+      from_agent: "sess-a",
+      to_agent: "sess-b",
+      channel: CHANNEL,
+      payload: JSON.stringify(firstPayload),
+    });
+    b.mamoru.pollOnce();
+    expect(b.mamoru.getStatus()).toBe("busy");
+
+    // A polls to consume the task_ack from the first task
+    a.mamoru.pollOnce();
+
+    // A sends a blocking task_req to B (who is busy)
+    const secondPayload = createPayload("task_req", "blocking task", { need_reply: true });
+    const secondId = sendTaskReq(db, {
+      from_agent: "sess-a",
+      to_agent: "sess-b",
+      channel: CHANNEL,
+      payload: JSON.stringify(secondPayload),
+    });
+    a.mamoru.registerOutboundTask(secondId, "sess-b");
+    a.mamoru.registerPendingRetry({
+      targetSessionId: "sess-b",
+      content: "blocking task",
+      detail: null,
+      intent: null,
+      blocking: true,
+      retryCount: 0,
+      createdAt: Date.now(),
+    });
+
+    // B rejects (auto-reject because busy)
+    b.mamoru.pollOnce();
+    a.mamoru.pollOnce(); // A receives task_reject
+
+    // task_reject should NOT be forwarded to LLM for blocking tasks
+    const rejectForwarded = a.pi.sentUserMessages.filter((m: any) =>
+      typeof m.content === "string" && m.content.includes("task_reject"),
+    );
+    expect(rejectForwarded.length).toBe(0);
+
+    // Now B finishes the first task and becomes available
+    b.mamoru.handleOutbound("task_done");
+    expect(b.mamoru.getStatus()).toBe("available");
+
+    // A polls — refreshRosterStatuses sees B is available, triggers auto-retry
+    a.mamoru.pollOnce();
+
+    // Should have auto-retried: a new task_req from A to B
+    const taskReqs = getMessagesByEvent(db, "sess-a", "task_req");
+    // first + second (rejected) + auto-retry = 3
+    expect(taskReqs.length).toBe(3);
+
+    a.mamoru.stop();
+    b.mamoru.stop();
+    db.close();
+  });
+
+  test("non-blocking task_req notifies LLM and auto-retries when available", () => {
+    const db = createSharedDb();
+    const a = createAgent(db, "sess-a", "A", "Requester");
+    const b = createAgent(db, "sess-b", "B", "Worker");
+
+    a.mamoru.start();
+    b.mamoru.start();
+
+    // Discover
+    a.mamoru.pollOnce();
+    b.mamoru.pollOnce();
+
+    // Make B busy
+    const firstPayload = createPayload("task_req", "first task");
+    sendTaskReq(db, {
+      from_agent: "sess-a",
+      to_agent: "sess-b",
+      channel: CHANNEL,
+      payload: JSON.stringify(firstPayload),
+    });
+    b.mamoru.pollOnce();
+    expect(b.mamoru.getStatus()).toBe("busy");
+
+    // A polls to consume the task_ack from the first task
+    a.mamoru.pollOnce();
+
+    // A sends a non-blocking task_req
+    const nbPayload = createPayload("task_req", "non-blocking task", { need_reply: true });
+    const nbId = sendTaskReq(db, {
+      from_agent: "sess-a",
+      to_agent: "sess-b",
+      channel: CHANNEL,
+      payload: JSON.stringify(nbPayload),
+    });
+    a.mamoru.registerOutboundTask(nbId, "sess-b");
+    a.mamoru.registerPendingRetry({
+      targetSessionId: "sess-b",
+      content: "non-blocking task",
+      detail: null,
+      intent: null,
+      blocking: false,
+      retryCount: 0,
+      createdAt: Date.now(),
+    });
+
+    // B rejects
+    b.mamoru.pollOnce();
+    a.mamoru.pollOnce(); // A receives reject
+
+    // Non-blocking: LLM should be notified about rejection
+    const queuedMsgs = a.pi.sentUserMessages.filter((m: any) =>
+      typeof m.content === "string" && m.content.includes("queued"),
+    );
+    expect(queuedMsgs.length).toBe(1);
+
+    // B finishes and becomes available
+    b.mamoru.handleOutbound("task_done");
+    a.mamoru.pollOnce(); // triggers roster refresh + auto-retry
+
+    // Should have auto-retried
+    const taskReqs = getMessagesByEvent(db, "sess-a", "task_req");
+    expect(taskReqs.length).toBe(3); // first + second + retry
+
+    // LLM should be notified of the auto-retry
+    const retryMsgs = a.pi.sentUserMessages.filter((m: any) =>
+      typeof m.content === "string" && m.content.includes("Auto-retried"),
+    );
+    expect(retryMsgs.length).toBe(1);
+
+    a.mamoru.stop();
+    b.mamoru.stop();
+    db.close();
+  });
+
+  test("task_ack clears pending retry so no duplicate resend", () => {
+    const db = createSharedDb();
+    const a = createAgent(db, "sess-a", "A", "Requester");
+    const b = createAgent(db, "sess-b", "B", "Worker");
+
+    a.mamoru.start();
+    b.mamoru.start();
+
+    // Discover
+    a.mamoru.pollOnce();
+    b.mamoru.pollOnce();
+
+    // Send task_req with blocking retry
+    const payload = createPayload("task_req", "test task", { need_reply: true });
+    const taskId = sendTaskReq(db, {
+      from_agent: "sess-a",
+      to_agent: "sess-b",
+      channel: CHANNEL,
+      payload: JSON.stringify(payload),
+    });
+    a.mamoru.registerOutboundTask(taskId, "sess-b");
+    a.mamoru.registerPendingRetry({
+      targetSessionId: "sess-b",
+      content: "test task",
+      detail: null,
+      intent: null,
+      blocking: true,
+      retryCount: 0,
+      createdAt: Date.now(),
+    });
+
+    // B accepts (available, so it accepts)
+    b.mamoru.pollOnce();
+    expect(b.mamoru.getStatus()).toBe("busy");
+
+    // A receives task_ack — should clear pending retry
+    a.mamoru.pollOnce();
+
+    // B finishes and becomes available
+    b.mamoru.handleOutbound("task_done");
+    a.mamoru.pollOnce();
+
+    // Should NOT have auto-retried (task_ack cleared the retry)
+    const taskReqs = getMessagesByEvent(db, "sess-a", "task_req");
+    expect(taskReqs.length).toBe(1); // only the original
+
+    a.mamoru.stop();
+    b.mamoru.stop();
+    db.close();
+  });
+});
+
 

@@ -13,9 +13,11 @@ import type {
   AgentStatus,
   ActiveTask,
   OutboundTask,
+  PendingRetry,
   PersonaConfig,
 } from "./types.ts";
 import { parsePayload, createPayload, isNewTaskReq, MAX_CONTENT_WORDS } from "./types.ts";
+import { sendTaskReq } from "./db.ts";
 import {
   sendMessage,
   getUnreadMessages,
@@ -57,6 +59,7 @@ export class Mamoru {
   private outboundTasks: Map<number, OutboundTask> = new Map();
   private contextBuffer: string[] = []; // buffered broadcast/info messages
   private eventLog: MamoruEventLog[] = [];
+  private pendingRetries: Map<string, PendingRetry> = new Map(); // keyed by targetSessionId
 
   constructor(opts: {
     db: Database.Database;
@@ -210,6 +213,39 @@ export class Mamoru {
     });
   }
 
+  /** Register a task_req for auto-retry when the target agent becomes available. */
+  registerPendingRetry(retry: PendingRetry): void {
+    this.pendingRetries.set(retry.targetSessionId, retry);
+  }
+
+  /** Attempt to resend a pending retry. Returns the new task_id or null on failure. */
+  private retryTask(retry: PendingRetry): number | null {
+    try {
+      const payload = createPayload("task_req", retry.content, {
+        intent: retry.intent,
+        need_reply: true,
+        detail: retry.detail,
+      });
+
+      const messageId = sendTaskReq(this.db, {
+        from_agent: this.sessionId,
+        to_agent: retry.targetSessionId,
+        channel: this.channel,
+        payload: JSON.stringify(payload),
+        maxContentWords: this.getContentWordLimit(),
+      });
+
+      this.registerOutboundTask(messageId, retry.targetSessionId);
+
+      const targetName = this.getAgentDisplayName(retry.targetSessionId);
+      this.logEvent("sent", "task_req", targetName, messageId, retry.content, false);
+
+      return messageId;
+    } catch {
+      return null;
+    }
+  }
+
   /** Handle outbound status transitions (called by send_message tool). */
   handleOutbound(event: string, taskId?: number): void {
     if (event === "task_done" || event === "task_fail") {
@@ -250,6 +286,12 @@ export class Mamoru {
     additions += `\n- task_done: always start with the recipient's name. e.g. "Developer, code review complete, all good"`;
     additions += `\n- task_fail: always start with the recipient's name + "we are having a problem". e.g. "Developer, we are having a problem, build failed"`;
     additions += `\n- broadcast: always start with "Hi everyone". e.g. "Hi everyone, deployment is done"`;
+
+    // Retry behavior
+    additions += `\n\nTask retry behavior ("blocking" parameter in send_message for task_req):`;
+    additions += `\n- blocking=true: if the recipient is busy, MAMORU will silently wait and auto-retry when they become available. Use this when you cannot proceed without the result.`;
+    additions += `\n- blocking=false: if rejected, you are notified and can continue other work. MAMORU auto-retries when the recipient becomes available.`;
+    additions += `\n- omitted: no auto-retry. You are notified of the rejection and must decide what to do.`;
 
     // Inject known teammates into system prompt (they may have joined before
     // us, so we missed their agent_join broadcasts due to cursor skip-to-MAX).
@@ -296,6 +338,9 @@ export class Mamoru {
       }
     }
 
+    // Sync agent busy/idle status with the LLM state.
+    this.syncIdleStatus();
+
     // Sync in-memory state with DB every poll cycle.
     this.refreshRosterStatuses();
     this.checkDbCleared();
@@ -320,6 +365,33 @@ export class Mamoru {
     }
     if (changed) {
       this.refreshSendMessageTool();
+      this.processPendingRetries();
+    }
+  }
+
+  /** Check pending retries and resend task_req if the target agent is now available. */
+  private processPendingRetries(): void {
+    for (const [targetSessionId, retry] of this.pendingRetries) {
+      const entry = this.roster.get(targetSessionId);
+      if (!entry || entry.status !== "available") continue;
+
+      // Agent is available — retry!
+      const newTaskId = this.retryTask(retry);
+      if (newTaskId) {
+        const targetName = this.getAgentDisplayName(targetSessionId);
+        if (retry.blocking) {
+          // Blocking: silent retry, no LLM notification needed
+          this.logEvent("sent", "task_req", targetName, newTaskId,
+            `[auto-retry #${retry.retryCount + 1}] ${retry.content}`, false);
+        } else {
+          // Non-blocking: tell the LLM the retry was sent
+          this.pi.sendUserMessage(
+            `[TEAM] "${targetName}" is now available. Auto-retried task_req (task #${newTaskId}): ${retry.content}`,
+            { deliverAs: "steer" },
+          );
+        }
+        this.pendingRetries.delete(targetSessionId);
+      }
     }
   }
 
@@ -431,6 +503,8 @@ export class Mamoru {
 
       case "task_ack":
         this.logEvent("recv", "task_ack", msg.from_agent, msg.task_id, payload.content, false);
+        // Task accepted — clear any pending retry for this agent
+        this.pendingRetries.delete(msg.from_agent);
         break;
 
       case "task_cancel_ack":
@@ -440,10 +514,34 @@ export class Mamoru {
         }
         break;
 
-      case "task_reject":
-        this.logEvent("recv", "task_reject", msg.from_agent, msg.task_id, payload.content, true);
-        this.forwardToLlm(msg, payload);
+      case "task_reject": {
+        const pendingRetry = this.pendingRetries.get(msg.from_agent);
+        if (pendingRetry) {
+          // This task_req has retry tracking
+          if (pendingRetry.blocking) {
+            // Blocking: silently wait for the agent to become available (handled in refreshRosterStatuses)
+            this.logEvent("recv", "task_reject", msg.from_agent, msg.task_id, payload.content, false);
+            pendingRetry.retryCount++;
+          } else {
+            // Non-blocking: inform the LLM, keep the retry pending for when agent is available
+            this.logEvent("recv", "task_reject", msg.from_agent, msg.task_id, payload.content, true);
+            const targetName = this.getAgentDisplayName(msg.from_agent);
+            this.pi.sendUserMessage(
+              `[TEAM] Task rejected by "${targetName}" (busy). The task is queued and will be auto-retried when they become available. You can continue with other work.`,
+              { deliverAs: "steer" },
+            );
+          }
+        } else {
+          // No retry tracking — forward to LLM as before
+          this.logEvent("recv", "task_reject", msg.from_agent, msg.task_id, payload.content, true);
+          this.forwardToLlm(msg, payload);
+        }
+        // Remove the outbound task since it was rejected
+        if (msg.task_id) {
+          this.outboundTasks.delete(msg.task_id);
+        }
         break;
+      }
 
       case "task_clarify":
         this.logEvent("recv", "task_clarify", msg.from_agent, msg.task_id, payload.content, true);
@@ -497,6 +595,24 @@ export class Mamoru {
   private setStatus(newStatus: AgentStatus): void {
     this.status = newStatus;
     updateAgentStatus(this.db, this.sessionId, newStatus);
+  }
+
+  /**
+   * Sync MAMORU status with the LLM's idle state.
+   * If the LLM is actively working (not idle), set status to "busy".
+   * If the LLM is idle and there's no active task, set status to "available".
+   */
+  private syncIdleStatus(): void {
+    try {
+      const isIdle = this.ctx.isIdle();
+      if (!isIdle && this.status === "available") {
+        this.setStatus("busy");
+      } else if (isIdle && this.status === "busy" && !this.activeTask) {
+        this.setStatus("available");
+      }
+    } catch {
+      // ctx.isIdle() may not be available in all contexts
+    }
   }
 
   private autoReply(

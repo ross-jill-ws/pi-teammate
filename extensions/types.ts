@@ -133,6 +133,17 @@ export interface OutboundTask {
   timeoutTimer: ReturnType<typeof setTimeout> | null;
 }
 
+// ── Pending Retry (rejected task_req awaiting retry) ────────────
+export interface PendingRetry {
+  targetSessionId: string;
+  content: string;
+  detail: string | null;
+  intent: string | null;
+  blocking: boolean;
+  retryCount: number;
+  createdAt: number;
+}
+
 // ── Active Task (worker side) ───────────────────────────────────
 export interface ActiveTask {
   taskId: number;

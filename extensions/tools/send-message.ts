@@ -15,6 +15,7 @@ export const SendMessageParams = Type.Object({
   content: Type.String({ description: "Brief summary (max 20 words). Put full details in 'detail' field." }),
   detail: Type.Optional(Type.String({ description: "Absolute file path to a detail markdown file in your teammate directory. REQUIRED for task_req — write a .md file containing full context, requirements, and absolute paths to any referenced files (images, screenshots, code). Also use for task_done/task_fail to include results." })),
   intent: Type.Optional(Type.String({ description: "Freeform intent hint" })),
+  blocking: Type.Optional(Type.Boolean({ description: "For task_req only. If true, MAMORU auto-retries when rejected (waits for recipient to become available). If false (default), you are notified of the rejection and can retry manually when the recipient is available." })),
 });
 
 export type SendMessageInput = Static<typeof SendMessageParams>;
@@ -91,9 +92,28 @@ export function createSendMessageTool(opts: {
         mamoru.registerOutboundTask(messageId, params.to);
         mamoru.logOutbound("task_req", target.agent_name, messageId, params.content);
 
+        // Register pending retry if blocking/non-blocking retry is requested
+        if (params.blocking !== undefined) {
+          mamoru.registerPendingRetry({
+            targetSessionId: params.to,
+            content: params.content,
+            detail: params.detail ?? null,
+            intent: params.intent ?? null,
+            blocking: params.blocking,
+            retryCount: 0,
+            createdAt: Date.now(),
+          });
+        }
+
+        const retryNote = params.blocking === true
+          ? " (blocking — will auto-retry if rejected)"
+          : params.blocking === false
+            ? " (non-blocking — will auto-retry when available, you can continue other work)"
+            : "";
+
         return {
-          content: [{ type: "text" as const, text: `Task #${messageId} sent to "${target.agent_name}". Waiting for acknowledgement.` }],
-          details: { messageId, taskId: messageId, event: "task_req", to: params.to, agentName: target.agent_name },
+          content: [{ type: "text" as const, text: `Task #${messageId} sent to "${target.agent_name}". Waiting for acknowledgement.${retryNote}` }],
+          details: { messageId, taskId: messageId, event: "task_req", to: params.to, agentName: target.agent_name, blocking: params.blocking },
         };
       }
 
