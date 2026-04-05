@@ -13,7 +13,7 @@ export const SendMessageParams = Type.Object({
   task_id: Type.Optional(Type.Number({ description: "The originating task_req's message_id. Required for task_done, task_fail, task_update, task_clarify, task_clarify_res. Not needed for task_req (auto-set)." })),
   ref_message_id: Type.Optional(Type.Number({ description: "The specific message this replies to. Usually same as task_id." })),
   content: Type.String({ description: "Message content (max 500 chars)" }),
-  detail: Type.Optional(Type.String({ description: "Absolute file path with detailed content" })),
+  detail: Type.Optional(Type.String({ description: "Absolute file path to a detail markdown file in your teammate directory. REQUIRED for task_req — write a .md file containing full context, requirements, and absolute paths to any referenced files (images, screenshots, code). Also use for task_done/task_fail to include results." })),
   intent: Type.Optional(Type.String({ description: "Freeform intent hint" })),
 });
 
@@ -29,6 +29,7 @@ export function createSendMessageTool(opts: {
     description:
       "Send a message to a teammate or broadcast to the team. " +
       "Use event 'task_req' to request work or ask a question (expects a response). " +
+      "For task_req: always write a detail markdown file with full context, requirements, and absolute paths to any referenced files (images, screenshots, etc.), then set 'detail' to its path. The 'content' field is just a 500-char summary. " +
       "Use task_done/task_fail/task_update/task_clarify for task lifecycle. " +
       "Use broadcast/info_only for announcements (no response expected). " +
       "No teammates are currently online.",

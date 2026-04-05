@@ -27,6 +27,11 @@ export class Roster {
     this.entries.set(entry.session_id, entry);
   }
 
+  /** Clear all roster entries */
+  clear(): void {
+    this.entries.clear();
+  }
+
   /** Remove an agent from the roster */
   remove(sessionId: string): void {
     this.entries.delete(sessionId);

@@ -183,6 +183,11 @@ export class Mamoru {
     return this.eventLog;
   }
 
+  /** Clear the in-memory event log. */
+  clearEventLog(): void {
+    this.eventLog = [];
+  }
+
   /** Register an outbound task for timeout tracking. */
   registerOutboundTask(taskId: number, workerSessionId: string): void {
     this.outboundTasks.set(taskId, {
@@ -208,15 +213,22 @@ export class Mamoru {
     let additions = "";
 
     if (this.persona) {
-      additions += `\n\nYou are "${this.persona.name}". ${this.persona.description}`;
+      additions += `\n\nYou are "${this.persona.name}"`;
       if (this.persona.systemPrompt) {
         additions += `\n\n${this.persona.systemPrompt}`;
+      } else {
+        additions += `\n\n${this.persona.description}`;
       }
     }
 
     if (this.teammateDir) {
       additions += `\n\nYour detail file directory: ${this.teammateDir}`;
-      additions += `\nWhen producing output files for tasks (reports, reviews, specs, etc.), always write them to this directory. Reference the absolute path in the "detail" field of your send_message call.`;
+      additions += `\nIMPORTANT — using the "detail" field in send_message:`;
+      additions += `\n- When sending a task_req, you MUST include ALL context the recipient needs to complete the task. The "content" field is limited to 500 chars and is only a summary.`;
+      additions += `\n- Write a markdown file to your detail directory (e.g. ${this.teammateDir}/task-brief.md) that contains the full task description, requirements, and references to any relevant files (images, code, screenshots, etc.) using their absolute paths.`;
+      additions += `\n- Set the "detail" field to the absolute path of that markdown file.`;
+      additions += `\n- For task_done/task_fail responses, also use a detail file to include full results, output files, or reports.`;
+      additions += `\n- NEVER reference files, images, or attachments only in the "content" text — always put them in the detail file so the recipient can actually access them.`;
     }
 
     // Inject known teammates into system prompt (they may have joined before
@@ -264,9 +276,9 @@ export class Mamoru {
       }
     }
 
-    // Refresh roster statuses from DB every poll cycle,
-    // so we pick up status changes made by other agents' MAMORUs.
+    // Sync in-memory state with DB every poll cycle.
     this.refreshRosterStatuses();
+    this.checkDbCleared();
   }
 
   /** Re-read agent statuses from the DB and update roster entries. */
@@ -274,7 +286,11 @@ export class Mamoru {
     let changed = false;
     for (const entry of this.roster.getAll()) {
       const agent = getAgentBySession(this.db, entry.session_id);
-      if (agent && agent.status !== entry.status) {
+      if (!agent) {
+        // Agent was removed from DB
+        this.roster.remove(entry.session_id);
+        changed = true;
+      } else if (agent.status !== entry.status) {
         this.roster.update({
           ...entry,
           status: agent.status as AgentStatus,
@@ -284,6 +300,22 @@ export class Mamoru {
     }
     if (changed) {
       this.refreshSendMessageTool();
+    }
+  }
+
+  /** If messages table is empty, clear in-memory state to match. */
+  private checkDbCleared(): void {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) as cnt FROM messages WHERE channel = ?"
+    ).get(this.channel) as { cnt: number };
+
+    if (row.cnt === 0 && (this.eventLog.length > 0 || this.activeTask || this.outboundTasks.size > 0)) {
+      this.eventLog = [];
+      this.activeTask = null;
+      this.outboundTasks.clear();
+      this.contextBuffer = [];
+      this.status = "available";
+      updateAgentStatus(this.db, this.sessionId, "available");
     }
   }
 

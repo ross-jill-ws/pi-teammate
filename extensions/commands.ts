@@ -38,17 +38,20 @@ export function registerCommands(
 ): void {
   // ── /team-create [name] ─────────────────────────────────────────
   pi.registerCommand("team-create", {
-    description: "Create a new team channel DB. Usage: /team-create [channelName]",
+    description: "Create (or recreate) a team channel DB. Deletes existing channel data if present. Usage: /team-create [channelName]",
     handler: async (args, ctx) => {
       const channelName = args.trim() || ctx.sessionManager.getSessionId();
+      const channelDir = getChannelDir(channelName);
       const dbPath = getDbPath(channelName);
 
-      if (channelExists(channelName)) {
-        ctx.ui.notify(`Channel "${channelName}" already exists at ${dbPath}`, "error");
-        return;
+      // Delete existing channel folder if present
+      if (existsSync(channelDir)) {
+        const { rmSync } = await import("node:fs");
+        rmSync(channelDir, { recursive: true, force: true });
+        ctx.ui.notify(`Deleted existing channel: ${channelDir}`, "info");
       }
 
-      mkdirSync(getChannelDir(channelName), { recursive: true });
+      mkdirSync(channelDir, { recursive: true });
 
       const Database = (await import("better-sqlite3")).default;
       const db = new Database(dbPath);
@@ -376,6 +379,35 @@ export function registerCommands(
       } finally {
         db.close();
       }
+    },
+  });
+
+  // ── /team-clear-all ─────────────────────────────────────────
+  pi.registerCommand("team-clear-all", {
+    description: "Clear all messages and cursors from the team channel DB",
+    handler: async (_args, ctx) => {
+      const mamoru = getMamoru();
+      if (!mamoru) {
+        ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
+        return;
+      }
+
+      const channel = mamoru.getChannel();
+      const dbPath = getDbPath(channel);
+
+      const Database = (await import("better-sqlite3")).default;
+      const db = new Database(dbPath);
+
+      try {
+        db.exec("DELETE FROM agent_cursors");
+        db.exec("DELETE FROM messages");
+        db.exec("DELETE FROM agents WHERE status = 'inactive'");
+        ctx.ui.notify(`Cleared all messages and cursors for channel "${channel}".`, "info");
+      } finally {
+        db.close();
+      }
+
+      mamoru.clearEventLog();
     },
   });
 

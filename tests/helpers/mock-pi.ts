@@ -161,6 +161,7 @@ export interface MockCtx {
   notifications: Array<{ message: string; type?: string }>;
   aborted: boolean;
   idle: boolean;
+  newSessionCalled: boolean;
   widgets: Map<string, any>;
   statuses: Map<string, string | undefined>;
   ui: {
@@ -170,6 +171,7 @@ export interface MockCtx {
   };
   isIdle(): boolean;
   abort(): void;
+  newSession(options?: any): Promise<any>;
   sessionManager: { getSessionId(): string };
 }
 
@@ -184,6 +186,7 @@ export function createMockCtx(sessionId?: string): MockCtx {
     notifications,
     aborted: false,
     idle: true,
+    newSessionCalled: false,
     widgets,
     statuses,
 
@@ -205,6 +208,11 @@ export function createMockCtx(sessionId?: string): MockCtx {
 
     abort() {
       this.aborted = true;
+    },
+
+    async newSession(_options?: any) {
+      this.newSessionCalled = true;
+      return { cancelled: false };
     },
 
     sessionManager: {
