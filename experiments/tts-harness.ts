@@ -10,6 +10,8 @@
  *
  * Each agent's voice is determined by the `voiceId` field in their persona.yaml.
  *
+ * Requires ELEVENLABS_API_KEY environment variable.
+ *
  * Usage (load alongside pi-teammate):
  *   pi -e /path/to/pi-teammate/experiments/tts-harness.ts --team-channel lab --agent-name designer
  *
@@ -18,17 +20,30 @@
  */
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import Database from "better-sqlite3";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import YAML from "yaml";
 
 // ── Config ──────────────────────────────────────────────────────
 
-const TTS_SCRIPT = join(homedir(), ".claude", "tts_11labs_cache.py");
 const SPOKEN_EVENTS = new Set(["task_req", "task_ack", "task_update", "task_done", "task_fail", "broadcast"]);
 const POLL_INTERVAL_MS = 300;
+
+const ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech";
+const DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; // Rachel
+const MODEL_ID = "eleven_v3";
+const OUTPUT_FORMAT = "mp3_44100_128";
+const CACHE_DIR = join(homedir(), ".pi", "pi-teammate", "audios");
+
+const VOICE_SETTINGS = {
+  stability: 0.4,
+  similarity_boost: 0.75,
+  style: 0.06,
+  use_speaker_boost: true,
+};
 
 // ── Voice resolution ────────────────────────────────────────────
 
@@ -82,24 +97,20 @@ interface VoiceQueueRow {
  * At any time, at most one row across all agents can be in state 1 (playing).
  */
 function claimNext(db: Database.Database): VoiceQueueRow | null {
-  // If any row is currently playing, don't claim another
   const playing = db.prepare(
     "SELECT COUNT(*) as cnt FROM voice_queue WHERE completed = 1"
   ).get() as { cnt: number };
   if (playing.cnt > 0) return null;
 
-  // Peek at the next pending row
   const row = db.prepare(
     "SELECT id, text, voice_id FROM voice_queue WHERE completed = 0 ORDER BY id ASC LIMIT 1"
   ).get() as VoiceQueueRow | undefined;
   if (!row) return null;
 
-  // Atomically claim it — only succeeds if still pending (completed = 0)
   const result = db.prepare(
     "UPDATE voice_queue SET completed = 1 WHERE id = ? AND completed = 0"
   ).run(row.id);
 
-  // If changes === 0, another agent already claimed it
   if (result.changes === 0) return null;
   return row;
 }
@@ -108,29 +119,113 @@ function markDone(db: Database.Database, id: number): void {
   db.prepare("UPDATE voice_queue SET completed = 2 WHERE id = ?").run(id);
 }
 
-// ── TTS playback ────────────────────────────────────────────────
+// ── ElevenLabs TTS with MP3 caching ─────────────────────────────
 
-function speak(text: string, voiceId: string | null): Promise<void> {
+function getCacheKey(text: string, voiceId: string): string {
+  return createHash("md5").update(`${voiceId}:${text}`).digest("hex");
+}
+
+function getCachePath(text: string, voiceId: string): string {
+  return join(CACHE_DIR, `${getCacheKey(text, voiceId)}.mp3`);
+}
+
+async function synthesize(text: string, voiceId: string): Promise<Buffer> {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) {
+    throw new Error("ELEVENLABS_API_KEY not set");
+  }
+
+  const url = `${ELEVENLABS_TTS_URL}/${voiceId}?output_format=${OUTPUT_FORMAT}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "xi-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      text,
+      model_id: MODEL_ID,
+      voice_settings: VOICE_SETTINGS,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`ElevenLabs API ${response.status}: ${body}`);
+  }
+
+  const arrayBuf = await response.arrayBuffer();
+  return Buffer.from(arrayBuf);
+}
+
+/**
+ * Get MP3 audio for the given text, using cache if available.
+ * Returns the path to the MP3 file.
+ */
+async function getAudioFile(text: string, voiceId: string): Promise<string> {
+  mkdirSync(CACHE_DIR, { recursive: true });
+
+  const cachePath = getCachePath(text, voiceId);
+  if (existsSync(cachePath)) {
+    return cachePath;
+  }
+
+  const audio = await synthesize(text, voiceId);
+  writeFileSync(cachePath, audio);
+  return cachePath;
+}
+
+/**
+ * Play an MP3 file using the best available player (mpv > ffplay > afplay).
+ */
+function playAudio(filePath: string): Promise<void> {
   return new Promise((resolve) => {
-    const args = [TTS_SCRIPT, text];
-    if (voiceId) {
-      args.push("--voice-id", voiceId);
+    // Try players in order of preference
+    const players = [
+      { cmd: "mpv", args: ["--no-video", "--really-quiet", filePath] },
+      { cmd: "ffplay", args: ["-nodisp", "-autoexit", "-loglevel", "quiet", filePath] },
+      { cmd: "afplay", args: [filePath] }, // macOS only
+    ];
+
+    function tryNext(index: number): void {
+      if (index >= players.length) {
+        console.error("[tts] ❌ No audio player found (tried mpv, ffplay, afplay)");
+        resolve();
+        return;
+      }
+
+      const { cmd, args } = players[index];
+      const child = spawn(cmd, args, { stdio: ["ignore", "ignore", "ignore"] });
+
+      child.on("error", () => {
+        // Player not found, try next
+        tryNext(index + 1);
+      });
+
+      child.on("close", (code) => {
+        if (code === 0 || code === null) {
+          resolve();
+        } else {
+          tryNext(index + 1);
+        }
+      });
     }
 
-    const child = spawn("uv", ["run", ...args], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-
-    child.stderr?.on("data", (data: Buffer) => {
-      process.stderr.write(`[tts] ❌ ${data.toString().trim()}\n`);
-    });
-
-    child.on("close", () => resolve());
-    child.on("error", (err) => {
-      console.error(`[tts] ❌ Failed to spawn TTS: ${err.message}`);
-      resolve();
-    });
+    tryNext(0);
   });
+}
+
+/**
+ * Full TTS pipeline: synthesize (or use cache) → play.
+ */
+async function speak(text: string, voiceId: string | null): Promise<void> {
+  const vid = voiceId || DEFAULT_VOICE_ID;
+  try {
+    const filePath = await getAudioFile(text, vid);
+    await playAudio(filePath);
+  } catch (err: any) {
+    console.error(`[tts] ❌ TTS error: ${err.message}`);
+  }
 }
 
 // ── Extension entry point ───────────────────────────────────────
@@ -195,7 +290,6 @@ export default function (pi: ExtensionAPI) {
         try {
           markDone(d, claimed.id);
         } catch {
-          // DB busy; will retry next cycle
           break;
         }
       }
@@ -214,11 +308,16 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      if (!process.env.ELEVENLABS_API_KEY) {
+        ctx.ui.notify("ELEVENLABS_API_KEY not set", "error");
+        return;
+      }
+
       if (selfVoiceId === null) {
         selfVoiceId = loadVoiceId(ctx.cwd);
       }
 
-      ctx.ui.notify(`Speaking: "${text}" (voice: ${selfVoiceId ?? "default"})`, "info");
+      ctx.ui.notify(`Speaking: "${text}" (voice: ${selfVoiceId ?? DEFAULT_VOICE_ID})`, "info");
       enqueue(text, selfVoiceId);
     },
   });
@@ -233,8 +332,8 @@ export default function (pi: ExtensionAPI) {
     const channelIdx = args.indexOf("--team-channel");
     channel = channelIdx >= 0 && args[channelIdx + 1] ? args[channelIdx + 1] : null;
 
-    if (!existsSync(TTS_SCRIPT)) {
-      console.error(`[tts] ❌ TTS script not found: ${TTS_SCRIPT}`);
+    if (!process.env.ELEVENLABS_API_KEY) {
+      console.error("[tts] ⚠️  ELEVENLABS_API_KEY not set — TTS will not work");
     }
 
     if (!channel) {
@@ -242,9 +341,6 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Don't create voice_queue here — with --team-new, pi-teammate deletes
-    // and recreates the DB during session_start. The table is created lazily
-    // on first enqueue/drain, by which point the DB is stable.
     pollTimer = setInterval(() => drain(), POLL_INTERVAL_MS);
     console.log(`[tts] 🎙️ TTS harness polling channel "${channel}"`);
   });
@@ -274,3 +370,20 @@ export default function (pi: ExtensionAPI) {
     }
   });
 }
+
+// ── Exported for testing ────────────────────────────────────────
+
+export {
+  synthesize,
+  getAudioFile,
+  playAudio,
+  speak,
+  getCachePath,
+  CACHE_DIR,
+  DEFAULT_VOICE_ID,
+  initVoiceQueue,
+  enqueueToDb,
+  claimNext,
+  markDone,
+};
+export type { VoiceQueueRow };

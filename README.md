@@ -133,7 +133,6 @@ Each agent's working directory should contain a `persona.yaml` that defines its 
 | `systemPrompt` | no | Private instructions that shape the agent's behavior |
 | `contentWordLimit` | no | Max word count for message content |
 | `voiceId` | no | ElevenLabs voice ID for TTS |
-| `voice` | no | Voice name for TTS |
 
 ### Example: Designer
 
@@ -185,3 +184,50 @@ systemPrompt: >
 ```
 
 The key to a good persona is a clear **boundary** — tell the agent what it owns and what it should hand off to others. The designer should never write code; the developer should never make design decisions; the tester should never approve without running builds.
+
+## Voice (ElevenLabs TTS)
+
+Teammates can speak their messages aloud using ElevenLabs text-to-speech. When enabled, every outbound message (task requests, updates, broadcasts, etc.) is synthesized and played through your speakers — giving you an audio feed of the team's activity without watching the screen.
+
+### Setup
+
+Set the `ELEVENLABS_API_KEY` environment variable:
+
+```bash
+export ELEVENLABS_API_KEY=sk-...
+```
+
+That's it. When the key is present, TTS activates automatically and the footer shows `audio: on`. When it's absent, TTS is completely disabled with zero overhead.
+
+### Per-Agent Voice
+
+Each agent can have its own voice by setting `voiceId` in `persona.yaml`:
+
+```yaml
+name: "Rachel"
+voiceId: "21m00Tcm4TlvDq8ikWAM"  # ElevenLabs voice ID
+description: "UI/UX designer"
+```
+
+If `voiceId` is omitted, the default voice Rachel (`21m00Tcm4TlvDq8ikWAM`) is used. You can browse available voices at [elevenlabs.io/voices](https://elevenlabs.io/voices).
+
+### How It Works
+
+- Each agent voices its **own outbound messages** only — no duplicates across the team
+- A shared `voice_queue` table in the team SQLite DB ensures messages are spoken **in order with no overlap**, even with multiple agents on the same machine
+- Audio is cached as MP3 in `~/.pi/pi-teammate/audios/` (keyed by voice ID + text), so repeated messages play instantly
+- Playback uses the best available player: `mpv` → `ffplay` → `afplay` (macOS)
+
+### Testing
+
+Use the `/tts-test` command to verify your setup:
+
+```
+/tts-test Hello, this is a voice test
+```
+
+Or run the test script:
+
+```bash
+bun run experiments/test-tts-harness.ts
+```

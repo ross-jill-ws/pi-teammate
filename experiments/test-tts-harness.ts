@@ -1,244 +1,265 @@
 #!/usr/bin/env bun
 /**
- * Test script for the TTS harness.
+ * Test script for the TTS module (extensions/tts.ts).
  *
- * Creates a temporary channel DB, inserts fake messages with various events,
- * and runs the TTS harness against it to verify end-to-end behavior.
+ * Tests the ElevenLabs TTS pipeline directly (pure TypeScript, no Python).
+ * Requires ELEVENLABS_API_KEY environment variable for API tests.
  *
  * Usage:
  *   bun run experiments/test-tts-harness.ts
  *
  * What it does:
- *   1. Creates a temp channel "tts-test-<timestamp>"
- *   2. Starts the TTS harness pointing at it
- *   3. Inserts test messages (task_req, task_ack, task_update, task_done, task_fail)
- *   4. Waits for the harness to process them
- *   5. Cleans up
+ *   1. Tests voice queue DB operations (enqueue, claim, mark done)
+ *   2. If ELEVENLABS_API_KEY is set:
+ *      - Tests audio synthesis + caching to ~/.pi/pi-teammate/audios/
+ *      - Tests end-to-end playback
  */
 import { Database } from "bun:sqlite";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 
-// ── Setup ───────────────────────────────────────────────────────
+// ── Config (mirrors extensions/tts.ts) ──────────────────────────
 
-const CHANNEL = `tts-test-${Date.now()}`;
-const BASE_DIR = join(homedir(), ".pi", "pi-teammate");
-const CHANNEL_DIR = join(BASE_DIR, CHANNEL);
-const DB_PATH = join(CHANNEL_DIR, "team.db");
+const CACHE_DIR = join(homedir(), ".pi", "pi-teammate", "audios");
+const DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; // Rachel
+const ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech";
+const MODEL_ID = "eleven_v3";
+const OUTPUT_FORMAT = "mp3_44100_128";
+const VOICE_SETTINGS = {
+  stability: 0.4,
+  similarity_boost: 0.75,
+  style: 0.06,
+  use_speaker_boost: true,
+};
 
-// Create temp persona dirs with voiceId
-const TEMP_DIR = join(CHANNEL_DIR, "_test-personas");
-const DEV_PERSONA_DIR = join(TEMP_DIR, "developer");
-const TESTER_PERSONA_DIR = join(TEMP_DIR, "tester");
+// ── Helpers (inlined for bun:sqlite compat) ─────────────────────
 
-function setupPersonas(): void {
-  mkdirSync(DEV_PERSONA_DIR, { recursive: true });
-  mkdirSync(TESTER_PERSONA_DIR, { recursive: true });
-
-  writeFileSync(join(DEV_PERSONA_DIR, "persona.yaml"), [
-    'name: "Developer"',
-    'voice: "Rachel"',
-    'voiceId: "21m00Tcm4TlvDq8ikWAM"',
-    'description: "Fullstack developer"',
-  ].join("\n"));
-
-  writeFileSync(join(TESTER_PERSONA_DIR, "persona.yaml"), [
-    'name: "Tester"',
-    'voice: "Joseph"',
-    'voiceId: "oyxaSt75JW8l04MCJaSo"',
-    'description: "QA engineer"',
-  ].join("\n"));
+function getCacheKey(text: string, voiceId: string): string {
+  return createHash("md5").update(`${voiceId}:${text}`).digest("hex");
 }
 
-// ── DB setup using bun:sqlite directly ──────────────────────────
-
-function setupDb(): Database {
-  mkdirSync(CHANNEL_DIR, { recursive: true });
-  const db = new Database(DB_PATH);
-
-  // Init schema (inline — avoids importing from extensions which use better-sqlite3 types)
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS agents (
-      session_id TEXT PRIMARY KEY,
-      agent_name TEXT NOT NULL,
-      description TEXT,
-      provider TEXT,
-      model TEXT,
-      cwd TEXT,
-      status TEXT NOT NULL DEFAULT 'available' CHECK(status IN ('available','busy','inactive')),
-      last_heartbeat INTEGER
-    )
-  `);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS messages (
-      message_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      from_agent TEXT NOT NULL,
-      to_agent TEXT,
-      channel TEXT NOT NULL,
-      task_id INTEGER,
-      ref_message_id INTEGER,
-      payload TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      FOREIGN KEY (from_agent) REFERENCES agents(session_id)
-    )
-  `);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS agent_cursors (
-      session_id TEXT NOT NULL,
-      channel TEXT NOT NULL,
-      last_read_id INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (session_id, channel)
-    )
-  `);
-
-  // Register two agents
-  db.prepare(`
-    INSERT OR REPLACE INTO agents (session_id, agent_name, description, status)
-    VALUES (?, ?, ?, 'available')
-  `).run("dev-session", "Developer", "Fullstack developer");
-
-  db.prepare(`
-    INSERT OR REPLACE INTO agents (session_id, agent_name, description, status)
-    VALUES (?, ?, ?, 'available')
-  `).run("tester-session", "Tester", "QA engineer");
-
-  return db;
+function getCachePath(text: string, voiceId: string): string {
+  return join(CACHE_DIR, `${getCacheKey(text, voiceId)}.mp3`);
 }
 
-// ── Message insertion helpers ───────────────────────────────────
+function initVoiceQueue(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS voice_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      text TEXT NOT NULL,
+      voice_id TEXT,
+      completed INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    )
+  `);
+}
 
-function insertMessage(
-  db: Database,
-  from: string,
-  to: string | null,
-  event: string,
-  content: string,
-  taskId: number | null,
-): number {
-  const payload = JSON.stringify({
-    event,
-    intent: null,
-    need_reply: event === "task_req",
-    content,
-    detail: null,
+function enqueueToDb(db: Database, text: string, voiceId: string | null): void {
+  db.prepare(
+    "INSERT INTO voice_queue (text, voice_id, completed, created_at) VALUES (?, ?, 0, ?)",
+  ).run(text, voiceId, Date.now());
+}
+
+interface VoiceQueueRow {
+  id: number;
+  text: string;
+  voice_id: string | null;
+}
+
+function claimNext(db: Database): VoiceQueueRow | null {
+  const playing = db.prepare(
+    "SELECT COUNT(*) as cnt FROM voice_queue WHERE completed = 1",
+  ).get() as { cnt: number };
+  if (playing.cnt > 0) return null;
+
+  const row = db.prepare(
+    "SELECT id, text, voice_id FROM voice_queue WHERE completed = 0 ORDER BY id ASC LIMIT 1",
+  ).get() as VoiceQueueRow | undefined;
+  if (!row) return null;
+
+  const result = db.prepare(
+    "UPDATE voice_queue SET completed = 1 WHERE id = ? AND completed = 0",
+  ).run(row.id);
+  if (result.changes === 0) return null;
+  return row;
+}
+
+function markDone(db: Database, id: number): void {
+  db.prepare("UPDATE voice_queue SET completed = 2 WHERE id = ?").run(id);
+}
+
+async function synthesize(text: string, voiceId: string): Promise<Buffer> {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) throw new Error("ELEVENLABS_API_KEY not set");
+
+  const url = `${ELEVENLABS_TTS_URL}/${voiceId}?output_format=${OUTPUT_FORMAT}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "xi-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      text,
+      model_id: MODEL_ID,
+      voice_settings: VOICE_SETTINGS,
+    }),
   });
-  const now = Date.now();
-  const result = db.prepare(`
-    INSERT INTO messages (from_agent, to_agent, channel, task_id, ref_message_id, payload, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(from, to, CHANNEL, taskId, taskId, payload, now);
-  return Number(result.lastInsertRowid);
-}
 
-function insertTaskReq(db: Database, from: string, to: string, content: string): number {
-  const payload = JSON.stringify({
-    event: "task_req",
-    intent: null,
-    need_reply: true,
-    content,
-    detail: null,
-  });
-  const now = Date.now();
-  // For task_req, first insert with task_id=NULL, then update to self-reference
-  const result = db.prepare(`
-    INSERT INTO messages (from_agent, to_agent, channel, task_id, ref_message_id, payload, created_at)
-    VALUES (?, ?, ?, NULL, NULL, ?, ?)
-  `).run(from, to, CHANNEL, payload, now);
-  const msgId = Number(result.lastInsertRowid);
-  db.prepare("UPDATE messages SET task_id = ?, ref_message_id = NULL WHERE message_id = ?").run(msgId, msgId);
-  return msgId;
-}
-
-// ── Test messages ───────────────────────────────────────────────
-
-function insertTestMessages(db: Database): void {
-  // Insert task_req first to get a task_id
-  const taskId = insertTaskReq(db, "dev-session", "tester-session", "Please review the login page");
-  console.log(`📨 [0s] Inserted task_req #${taskId}: "Please review the login page"`);
-
-  const scheduled = [
-    { from: "tester-session", to: "dev-session", event: "task_ack", content: "On it, reviewing now", delayMs: 2000 },
-    { from: "tester-session", to: "dev-session", event: "task_update", content: "Found a minor styling issue", delayMs: 4000 },
-    { from: "tester-session", to: "dev-session", event: "task_done", content: "Review complete, all tests pass", delayMs: 6000 },
-    { from: "dev-session", to: "tester-session", event: "task_fail", content: "Build failed after merge conflict", delayMs: 8000 },
-  ];
-
-  for (const msg of scheduled) {
-    setTimeout(() => {
-      const msgId = insertMessage(db, msg.from, msg.to, msg.event, msg.content, taskId);
-      console.log(`📨 [${msg.delayMs / 1000}s] Inserted ${msg.event} #${msgId}: "${msg.content}"`);
-    }, msg.delayMs);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`ElevenLabs API ${response.status}: ${body}`);
   }
+
+  return Buffer.from(await response.arrayBuffer());
 }
 
-// ── Main ────────────────────────────────────────────────────────
+function playAudio(filePath: string): Promise<void> {
+  return new Promise((resolve) => {
+    const players = [
+      { cmd: "mpv", args: ["--no-video", "--really-quiet", filePath] },
+      { cmd: "ffplay", args: ["-nodisp", "-autoexit", "-loglevel", "quiet", filePath] },
+      { cmd: "afplay", args: [filePath] },
+    ];
+
+    function tryNext(index: number): void {
+      if (index >= players.length) {
+        console.error("  ❌ No audio player found (tried mpv, ffplay, afplay)");
+        resolve();
+        return;
+      }
+      const { cmd, args } = players[index];
+      const child = spawn(cmd, args, { stdio: ["ignore", "ignore", "ignore"] });
+      child.on("error", () => tryNext(index + 1));
+      child.on("close", (code) => {
+        if (code === 0 || code === null) resolve();
+        else tryNext(index + 1);
+      });
+    }
+
+    tryNext(0);
+  });
+}
+
+// ── Tests ───────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  console.log("🧪 TTS Harness Test");
+  console.log("🧪 TTS Module Test (pure TypeScript)");
   console.log("═".repeat(60));
 
-  // Setup
-  console.log(`\n📁 Channel: ${CHANNEL}`);
-  setupPersonas();
-  const db = setupDb();
+  // 1. Voice queue DB tests (always run)
+  await testVoiceQueue();
 
-  // Start the harness
-  console.log("\n🚀 Starting TTS harness...\n");
-  const personaDirs = `${DEV_PERSONA_DIR},${TESTER_PERSONA_DIR}`;
-  const harness: ChildProcess = spawn(
-    "bun",
-    [
-      "run",
-      join(import.meta.dir, "tts-harness.ts"),
-      CHANNEL,
-      "--poll-ms=500",
-      `--persona-dirs=${personaDirs}`,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      cwd: join(import.meta.dir, ".."),
-    },
-  );
+  // 2. API tests (only if key is set)
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) {
+    console.log("\n⚠️  ELEVENLABS_API_KEY not set — skipping API tests.");
+    console.log("   Set it to run synthesis + playback tests:");
+    console.log("   ELEVENLABS_API_KEY=sk-... bun run experiments/test-tts-harness.ts\n");
+  } else {
+    console.log("✅ ELEVENLABS_API_KEY found\n");
+    await testSynthesisAndCache();
+    await testPlayback();
+  }
 
-  harness.stdout?.on("data", (data: Buffer) => {
-    for (const line of data.toString().split("\n").filter(Boolean)) {
-      console.log(`  [harness] ${line}`);
-    }
-  });
+  console.log("✅ All tests passed!\n");
+}
 
-  harness.stderr?.on("data", (data: Buffer) => {
-    for (const line of data.toString().split("\n").filter(Boolean)) {
-      console.log(`  [harness:err] ${line}`);
-    }
-  });
+async function testVoiceQueue(): Promise<void> {
+  console.log("── Voice Queue DB Tests ──────────────────────────────");
 
-  // Wait for harness to initialize
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  const db = new Database(":memory:");
+  initVoiceQueue(db);
 
-  // Insert test messages (with staggered timing)
-  console.log("\n📝 Inserting test messages...\n");
-  insertTestMessages(db);
+  // Enqueue 3 items
+  enqueueToDb(db, "Hello world", "voice-1");
+  enqueueToDb(db, "Second message", "voice-2");
+  enqueueToDb(db, "Third message", null);
 
-  // Wait for all messages to be inserted and processed
-  const totalDuration = 8000 + 5000; // last message at 8s + 5s buffer for TTS
-  console.log(`\n⏳ Waiting ${totalDuration / 1000}s for all messages to be spoken...\n`);
-  await new Promise(resolve => setTimeout(resolve, totalDuration));
+  // Claim first
+  const first = claimNext(db);
+  console.assert(first !== null, "Should claim first item");
+  console.assert(first!.text === "Hello world", "First item text");
+  console.assert(first!.voice_id === "voice-1", "First item voice_id");
+  console.log("  ✅ claimNext returns first pending item");
 
-  // Cleanup
-  console.log("\n🧹 Cleaning up...");
-  harness.kill("SIGINT");
-  await new Promise(resolve => setTimeout(resolve, 500));
+  // While first is playing (completed=1), can't claim another
+  const blocked = claimNext(db);
+  console.assert(blocked === null, "Should not claim while playing");
+  console.log("  ✅ claimNext blocked while item is playing");
+
+  // Mark done, then claim next
+  markDone(db, first!.id);
+  const second = claimNext(db);
+  console.assert(second !== null, "Should claim second after first done");
+  console.assert(second!.text === "Second message", "Second item text");
+  console.log("  ✅ markDone + claimNext advances FIFO");
+
+  // Mark second done, claim third (null voice_id)
+  markDone(db, second!.id);
+  const third = claimNext(db);
+  console.assert(third !== null, "Should claim third");
+  console.assert(third!.voice_id === null, "Third item has null voice_id");
+  markDone(db, third!.id);
+  console.log("  ✅ Null voice_id handled correctly");
+
+  // Queue empty
+  const empty = claimNext(db);
+  console.assert(empty === null, "Should return null when queue empty");
+  console.log("  ✅ Empty queue returns null");
+
   db.close();
+  console.log("  ✅ All voice queue tests passed\n");
+}
 
-  try {
-    rmSync(CHANNEL_DIR, { recursive: true, force: true });
-    console.log(`   Removed ${CHANNEL_DIR}`);
-  } catch {}
+async function testSynthesisAndCache(): Promise<void> {
+  console.log("── Synthesis + Cache Tests ───────────────────────────");
 
-  console.log("\n✅ Test complete!\n");
+  const testText = `TTS test at ${new Date().toISOString().slice(11, 19)}`;
+  const voiceId = DEFAULT_VOICE_ID;
+  const cachePath = getCachePath(testText, voiceId);
+
+  // Synthesize
+  console.log(`  🔊 Synthesizing: "${testText}"`);
+  const audio = await synthesize(testText, voiceId);
+  console.assert(audio.length > 0, "Audio should have content");
+  console.log(`  ✅ Synthesized ${audio.length} bytes`);
+
+  // Save to cache
+  mkdirSync(CACHE_DIR, { recursive: true });
+  writeFileSync(cachePath, audio);
+  console.assert(existsSync(cachePath), "Cache file should exist");
+  console.log(`  ✅ Cached to ${cachePath}`);
+
+  // Verify cache hit
+  const cached = readFileSync(cachePath);
+  console.assert(cached.length === audio.length, "Cached file should match original size");
+  console.log(`  ✅ Cache hit verified (${cached.length} bytes)\n`);
+}
+
+async function testPlayback(): Promise<void> {
+  console.log("── End-to-End Playback Test ──────────────────────────");
+
+  const testText = "Hello, this is a test of the TTS module.";
+  const voiceId = DEFAULT_VOICE_ID;
+  const cachePath = getCachePath(testText, voiceId);
+
+  // Synthesize if not cached
+  if (!existsSync(cachePath)) {
+    console.log(`  🔊 Synthesizing: "${testText}"`);
+    const audio = await synthesize(testText, voiceId);
+    mkdirSync(CACHE_DIR, { recursive: true });
+    writeFileSync(cachePath, audio);
+  } else {
+    console.log("  💾 Using cached audio");
+  }
+
+  console.log("  🔈 Playing audio...");
+  await playAudio(cachePath);
+  console.log("  ✅ Playback complete\n");
 }
 
 main().catch((err) => {

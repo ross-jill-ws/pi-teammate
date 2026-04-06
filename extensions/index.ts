@@ -15,6 +15,7 @@ import { registerCommands } from "./commands.ts";
 import { DEFAULT_MAMORU_CONFIG } from "./types.ts";
 import { setupPrefixKeys } from "./prefix-keys.ts";
 import { getChannelDir, getDbPath, getTeammateDir, channelExists } from "./paths.ts";
+import { isEnabled as isTtsEnabled, setupTts } from "./tts.ts";
 
 function formatUptime(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -32,6 +33,9 @@ export default function (pi: ExtensionAPI) {
   let activeDb: Database.Database | null = null;
   let extensionCtx: ExtensionContext | null = null;
   let uptimeTimer: ReturnType<typeof setInterval> | null = null;
+
+  // ── TTS (conditional on ELEVENLABS_API_KEY) ────────────────────
+  const tts = isTtsEnabled() ? setupTts(pi, () => activeDb) : null;
 
   // ── CLI Flags ───────────────────────────────────────────────────
   pi.registerFlag("team-channel", {
@@ -185,6 +189,11 @@ export default function (pi: ExtensionAPI) {
     // Show inactive status in footer until team is joined
     ctx.ui.setStatus("teammate", "mamoru: inactive");
 
+    // Show TTS status (will be set to "audio: on" if API key exists)
+    if (!isTtsEnabled()) {
+      ctx.ui.setStatus("tts", undefined);
+    }
+
     // ── Apply persona provider/model on session start (also runs on /reload) ──
     try {
       const persona = loadPersona(ctx.cwd);
@@ -223,21 +232,30 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    if (!channel && !agentName) return;
+    if (!channel && !agentName) {
+      // No team flags — still init TTS for /tts-test command
+      tts?.onSessionStart(ctx, null);
+      return;
+    }
 
     if (!channel) {
       // agentName from persona but no channel — nothing to join
+      tts?.onSessionStart(ctx, null);
       return;
     }
 
     if (!agentName) {
       ctx.ui.notify("--agent-name is required (or set 'name' in persona.yaml)", "error");
+      tts?.onSessionStart(ctx, null);
       return;
     }
 
     const forceNew = pi.getFlag("team-new") as boolean | undefined;
     bootstrapMamoru(ctx, channel, agentName, forceNew || false);
     console.log(`[teammate] Joined "${channel}" as "${agentName}"${forceNew ? " (clean start)" : ""}`);
+
+    // Start TTS polling for this channel
+    tts?.onSessionStart(ctx, channel);
   });
 
   // Inject persona + task context into system prompt
@@ -261,6 +279,7 @@ export default function (pi: ExtensionAPI) {
 
   // Cleanup on shutdown
   pi.on("session_shutdown", async () => {
+    tts?.onShutdown();
     if (uptimeTimer) {
       clearInterval(uptimeTimer);
       uptimeTimer = null;
