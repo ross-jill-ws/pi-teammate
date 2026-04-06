@@ -54,6 +54,7 @@ export class Mamoru {
   private teammateDir: string;
 
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private startedAt: number | null = null;
   private status: AgentStatus = "available";
   private activeTask: ActiveTask | null = null;
   private outboundTasks: Map<number, OutboundTask> = new Map();
@@ -121,6 +122,7 @@ export class Mamoru {
     this.logEvent("sent", "broadcast", "channel", null, joinContent, false);
 
     // Start polling
+    this.startedAt = Date.now();
     this.pollTimer = setInterval(() => this.pollOnce(), this.config.pollIntervalMs);
   }
 
@@ -150,6 +152,7 @@ export class Mamoru {
     // Mark inactive in DB
     updateAgentStatus(this.db, this.sessionId, "inactive");
     this.status = "inactive";
+    this.startedAt = null;
   }
 
   getStatus(): AgentStatus {
@@ -170,6 +173,16 @@ export class Mamoru {
 
   getChannel(): string {
     return this.channel;
+  }
+
+  /** Whether MAMORU is actively polling. */
+  isActive(): boolean {
+    return this.startedAt !== null;
+  }
+
+  /** Uptime in milliseconds since start(), or 0 if inactive. */
+  getUptimeMs(): number {
+    return this.startedAt ? Date.now() - this.startedAt : 0;
   }
 
   getAgentName(): string {

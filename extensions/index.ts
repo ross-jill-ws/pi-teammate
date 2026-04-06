@@ -16,10 +16,22 @@ import { DEFAULT_MAMORU_CONFIG } from "./types.ts";
 import { setupPrefixKeys } from "./prefix-keys.ts";
 import { getChannelDir, getDbPath, getTeammateDir, channelExists } from "./paths.ts";
 
+function formatUptime(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return hours > 0
+    ? `${hours}:${pad(mins)}:${pad(secs)}`
+    : `${mins}:${pad(secs)}`;
+}
+
 export default function (pi: ExtensionAPI) {
   let mamoru: Mamoru | null = null;
   let activeDb: Database.Database | null = null;
   let extensionCtx: ExtensionContext | null = null;
+  let uptimeTimer: ReturnType<typeof setInterval> | null = null;
 
   // ── CLI Flags ───────────────────────────────────────────────────
   pi.registerFlag("team-channel", {
@@ -48,6 +60,28 @@ export default function (pi: ExtensionAPI) {
     const newDesc = data.roster.buildToolDescription(data.selfSessionId);
     pi.registerTool({ ...sendMessageTool, description: newDesc });
   });
+
+  // ── Uptime Footer Status ─────────────────────────────────────
+  function startUptimeDisplay(ctx: ExtensionContext): void {
+    stopUptimeDisplay(ctx);
+    uptimeTimer = setInterval(() => {
+      if (mamoru?.isActive()) {
+        const channel = mamoru.getChannel();
+        const uptime = formatUptime(mamoru.getUptimeMs());
+        ctx.ui.setStatus("teammate", `${channel}: ${uptime}`);
+      } else {
+        ctx.ui.setStatus("teammate", "mamoru: inactive");
+      }
+    }, 1000);
+  }
+
+  function stopUptimeDisplay(ctx: ExtensionContext): void {
+    if (uptimeTimer) {
+      clearInterval(uptimeTimer);
+      uptimeTimer = null;
+    }
+    ctx.ui.setStatus("teammate", "mamoru: inactive");
+  }
 
   // ── Bootstrap Helper ────────────────────────────────────────────
   function bootstrapMamoru(ctx: ExtensionContext, channel: string, agentName: string, forceNew?: boolean): void {
@@ -95,6 +129,7 @@ export default function (pi: ExtensionAPI) {
       teammateDir,
     });
     mamoru.start();
+    startUptimeDisplay(ctx);
   }
 
   // ── Commands ────────────────────────────────────────────────────
@@ -146,6 +181,9 @@ export default function (pi: ExtensionAPI) {
   // Auto-bootstrap from CLI flags on session start, and apply persona config
   pi.on("session_start", async (_event, ctx) => {
     extensionCtx = ctx;
+
+    // Show inactive status in footer until team is joined
+    ctx.ui.setStatus("teammate", "mamoru: inactive");
 
     // ── Apply persona provider/model on session start (also runs on /reload) ──
     try {
@@ -223,6 +261,10 @@ export default function (pi: ExtensionAPI) {
 
   // Cleanup on shutdown
   pi.on("session_shutdown", async () => {
+    if (uptimeTimer) {
+      clearInterval(uptimeTimer);
+      uptimeTimer = null;
+    }
     mamoru?.stop();
     mamoru = null;
     if (activeDb) {

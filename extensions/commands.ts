@@ -111,6 +111,7 @@ export function registerCommands(
       const name = mamoru.getAgentName();
       mamoru.stop();
       setMamoru(null);
+      ctx.ui.setStatus("teammate", "mamoru: inactive");
       ctx.ui.notify(`Left channel "${channel}" (was "${name}")`, "info");
     },
   });
