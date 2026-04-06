@@ -84,13 +84,14 @@ For the full design rationale, see [Designing a Teammate-Based Multi-Agent Syste
 
 ### 1. Create a Team
 
-The first agent creates the team with `--team-new` (this creates a fresh channel database):
+From the first teammate's working directory (which contains their `persona.yaml`), create the team with `--team-new` (this creates a fresh channel database). Since `persona.yaml` already defines the `name` field, `--agent-name` is not needed:
 
 ```bash
-pi --team-channel my-project --agent-name designer --team-new
+cd project/designer   # contains persona.yaml with name: "Rachel"
+pi --team-channel my-project --team-new
 ```
 
-If you're already in a `pi` REPL, use the slash command instead:
+Rachel is now on the channel. If you're already in a `pi` REPL instead, use the slash command:
 
 ```
 /team-create my-project
@@ -98,11 +99,14 @@ If you're already in a `pi` REPL, use the slash command instead:
 
 ### 2. Join the Team
 
-Other agents join the same channel by name:
+Other agents join the same channel from their own working directories:
 
 ```bash
-pi --team-channel my-project --agent-name developer
-pi --team-channel my-project --agent-name tester
+cd project/developer  # persona.yaml → name: "Drew"
+pi --team-channel my-project
+
+cd project/tester     # persona.yaml → name: "Joseph"
+pi --team-channel my-project
 ```
 
 Or from an existing REPL:
@@ -111,17 +115,18 @@ Or from an existing REPL:
 /team-join my-project
 ```
 
-When an agent joins, it broadcasts its name and capabilities to everyone already on the channel. Teammates can also **leave** at any time — the remaining members are notified instantly.
+When Drew or Joseph joins, a broadcast goes out and everyone already on the channel (Rachel) immediately sees the new member's name and capabilities. Teammates can also **leave** at any time — the remaining members are notified instantly.
 
 ### 3. Add More Teammates Anytime
 
-The team is fully **decentralized** — there is no fixed roster. If a task turns out to be more complex than expected, simply open another terminal and join:
+The team is fully **decentralized** — there is no fixed roster. If a task turns out to be more complex than expected, simply prepare a new teammate directory with a `persona.yaml`, open another terminal, and join:
 
 ```bash
-pi --team-channel my-project --agent-name accessibility-reviewer
+cd project/accessibility-reviewer   # persona.yaml → name: "Alex"
+pi --team-channel my-project
 ```
 
-A broadcast message goes out to all existing teammates and they immediately know the new member's capabilities. No restart, no config change — just join and start collaborating.
+A broadcast message goes out to Rachel, Drew, and Joseph, and they immediately know Alex's capabilities. No restart, no config change — just join and start collaborating.
 
 ### 4. Start Working
 
