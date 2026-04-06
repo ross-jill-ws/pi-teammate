@@ -29,6 +29,7 @@ describe("loadPersona", () => {
         description: "A helpful assistant",
         provider: "anthropic",
         model: "claude-sonnet-4-5",
+        thinkingLevel: null,
         systemPrompt: null,
       });
     } finally {
@@ -50,6 +51,7 @@ describe("loadPersona", () => {
         description: "Just a bot",
         provider: null,
         model: null,
+        thinkingLevel: null,
         systemPrompt: null,
       });
     } finally {
@@ -214,6 +216,72 @@ describe("loadPersona", () => {
       const result = loadPersona(dir);
       expect(result).not.toBeNull();
       expect(result!.systemPrompt).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("loads thinkingLevel when present", () => {
+    const dir = makeTmpDir();
+    try {
+      writePersona(dir, [
+        "name: Ivan",
+        "description: Deep thinker",
+        'thinkingLevel: "high"',
+      ].join("\n"));
+
+      const result = loadPersona(dir);
+      expect(result).not.toBeNull();
+      expect(result!.thinkingLevel).toBe("high");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("thinkingLevel defaults to null when omitted", () => {
+    const dir = makeTmpDir();
+    try {
+      writePersona(dir, [
+        "name: Judy",
+        "description: Default thinker",
+      ].join("\n"));
+
+      const result = loadPersona(dir);
+      expect(result).not.toBeNull();
+      expect(result!.thinkingLevel).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts all valid thinkingLevel values (off, low, medium, high)", () => {
+    const levels = ["off", "low", "medium", "high"] as const;
+    for (const level of levels) {
+      const dir = makeTmpDir();
+      try {
+        writePersona(dir, [
+          "name: Kate",
+          "description: Variable thinker",
+          `thinkingLevel: "${level}"`,
+        ].join("\n"));
+        const result = loadPersona(dir);
+        expect(result!.thinkingLevel).toBe(level);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("throws on invalid thinkingLevel value", () => {
+    const dir = makeTmpDir();
+    try {
+      writePersona(dir, [
+        "name: Leo",
+        "description: Bad thinker",
+        'thinkingLevel: "extreme"',
+      ].join("\n"));
+
+      expect(() => loadPersona(dir)).toThrow(/thinkingLevel/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

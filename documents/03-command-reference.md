@@ -157,7 +157,7 @@ Cancel an outbound task (a task you sent to another agent). Sends a `task_cancel
 
 #### `/persona-template`
 
-Generate a `persona.yaml` template file in the current working directory. The `name` is derived from the directory name, and `provider`/`model` are populated from the current session's configuration.
+Generate a `persona.yaml` template file in the current working directory. The `name` is derived from the directory name, and `provider`/`model`/`thinkingLevel` are populated from the current session's configuration.
 
 Will not overwrite an existing `persona.yaml`.
 

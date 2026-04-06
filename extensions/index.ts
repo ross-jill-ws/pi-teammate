@@ -194,7 +194,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("tts", undefined);
     }
 
-    // ── Apply persona provider/model on session start (also runs on /reload) ──
+    // ── Apply persona provider/model/thinkingLevel on session start (also runs on /reload) ──
     try {
       const persona = loadPersona(ctx.cwd);
       if (persona) {
@@ -209,6 +209,14 @@ export default function (pi: ExtensionAPI) {
             }
           } else {
             ctx.ui.notify(`persona.yaml: model "${persona.model}" not found for provider "${persona.provider}"`, "warning");
+          }
+        }
+        if (persona.thinkingLevel) {
+          try {
+            pi.setThinkingLevel(persona.thinkingLevel);
+            console.log(`[teammate] Applied persona thinkingLevel: ${persona.thinkingLevel}`);
+          } catch (err: any) {
+            ctx.ui.notify(`persona.yaml: failed to set thinkingLevel: ${err.message}`, "warning");
           }
         }
       }

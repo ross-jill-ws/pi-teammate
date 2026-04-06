@@ -398,14 +398,19 @@ export function registerCommands(
       const dirName = ctx.cwd.split(/[\/\\]/).filter(Boolean).pop() || "Agent";
       const name = dirName.charAt(0).toUpperCase() + dirName.slice(1);
 
-      // Use current session's provider and model as defaults
+      // Use current session's provider, model, and thinking level as defaults
       const provider = (ctx as any).model?.provider || "anthropic";
       const model = (ctx as any).model?.id || "claude-sonnet-4-5";
+      let thinkingLevel = "medium";
+      try {
+        thinkingLevel = (pi as any).getThinkingLevel?.() ?? "medium";
+      } catch { /* ignore */ }
 
       const template = [
         `name: "${name}"`,
         `provider: "${provider}"`,
         `model: "${model}"`,
+        `thinkingLevel: "${thinkingLevel}"`,
         'description: ""',
         'systemPrompt: ""',
         '',

@@ -130,6 +130,7 @@ Each agent's working directory should contain a `persona.yaml` that defines its 
 | `description` | yes | What this agent does — teammates use this to decide who to delegate to |
 | `provider` | yes | LLM provider (`anthropic`, `openai`, etc.) |
 | `model` | yes | Model identifier (e.g. `claude-opus-4-6`) |
+| `thinkingLevel` | no | Reasoning effort: `off`, `low`, `medium`, `high` (default: inherited from pi settings) |
 | `systemPrompt` | no | Private instructions that shape the agent's behavior |
 | `contentWordLimit` | no | Max word count for message content |
 | `voiceId` | no | ElevenLabs voice ID for TTS |

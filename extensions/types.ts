@@ -92,10 +92,13 @@ export interface CursorRow {
 }
 
 // ── Persona Config ──────────────────────────────────────────────
+export type ThinkingLevel = "off" | "low" | "medium" | "high";
+
 export interface PersonaConfig {
   name: string;
   provider: string | null;
   model: string | null;
+  thinkingLevel: ThinkingLevel | null;
   description: string;
   systemPrompt: string | null;
   /** Any additional user-defined properties from persona.yaml. */

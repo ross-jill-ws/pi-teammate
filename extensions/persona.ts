@@ -45,7 +45,7 @@ export function loadPersona(cwd: string): PersonaConfig | null {
   }
 
   // Collect any extra user-defined properties
-  const knownKeys = new Set(["name", "description", "provider", "model", "systemPrompt"]);
+  const knownKeys = new Set(["name", "description", "provider", "model", "thinkingLevel", "systemPrompt"]);
   const extras: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(doc)) {
     if (!knownKeys.has(k)) {
@@ -53,11 +53,24 @@ export function loadPersona(cwd: string): PersonaConfig | null {
     }
   }
 
+  // Validate thinkingLevel if present
+  const validThinkingLevels = new Set(["off", "low", "medium", "high"]);
+  let thinkingLevel: "off" | "low" | "medium" | "high" | null = null;
+  if (doc.thinkingLevel != null) {
+    if (typeof doc.thinkingLevel !== "string" || !validThinkingLevels.has(doc.thinkingLevel)) {
+      throw new Error(
+        `persona.yaml: 'thinkingLevel' must be one of: off, low, medium, high (got: ${JSON.stringify(doc.thinkingLevel)})`,
+      );
+    }
+    thinkingLevel = doc.thinkingLevel as "off" | "low" | "medium" | "high";
+  }
+
   return {
     name: name.trim(),
     description: description.trim(),
     provider: typeof doc.provider === "string" ? doc.provider : null,
     model: typeof doc.model === "string" ? doc.model : null,
+    thinkingLevel,
     systemPrompt: typeof doc.systemPrompt === "string" && doc.systemPrompt.trim() !== ""
       ? doc.systemPrompt.trim()
       : null,
