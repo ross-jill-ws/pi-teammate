@@ -59,6 +59,23 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerTool(sendMessageTool);
 
+  // The send_message tool is only useful while connected to a team channel.
+  // Toggle its presence in the active tool set so the LLM never sees it when
+  // MAMORU is inactive (before /team-join or after /team-leave).
+  function activateSendMessageTool(): void {
+    const active = pi.getActiveTools();
+    if (!active.includes("send_message")) {
+      pi.setActiveTools([...active, "send_message"]);
+    }
+  }
+
+  function deactivateSendMessageTool(): void {
+    const active = pi.getActiveTools();
+    if (active.includes("send_message")) {
+      pi.setActiveTools(active.filter((t) => t !== "send_message"));
+    }
+  }
+
   // Update send_message description when roster changes
   pi.events.on("teammate_roster_changed", (data: any) => {
     const newDesc = data.roster.buildToolDescription(data.selfSessionId);
@@ -134,13 +151,20 @@ export default function (pi: ExtensionAPI) {
     });
     mamoru.start();
     startUptimeDisplay(ctx);
+    activateSendMessageTool();
   }
 
   // ── Commands ────────────────────────────────────────────────────
   registerCommands(
     pi,
     () => mamoru,
-    (m) => { mamoru = m; },
+    (m) => {
+      mamoru = m;
+      if (m === null) {
+        // /team-leave just cleared MAMORU — hide send_message from the LLM.
+        deactivateSendMessageTool();
+      }
+    },
     () => extensionCtx,
     { bootstrapMamoru },
   );
@@ -188,6 +212,9 @@ export default function (pi: ExtensionAPI) {
 
     // Show inactive status in footer until team is joined
     ctx.ui.setStatus("teammate", "mamoru: inactive");
+
+    // Hide send_message from the LLM until a team is joined
+    deactivateSendMessageTool();
 
     // Show TTS status (will be set to "audio: on" if API key exists)
     if (!isTtsEnabled()) {
