@@ -263,16 +263,16 @@ While `pi-teammate` runs inside each terminal, it can be hard to track the whole
 
 ![pi-teammate-ui screenshot](https://raw.githubusercontent.com/ross-jill-ws/pi-teammate-ui/refs/heads/main/documents/20260406150120.png)
 
-### Install
+You can click any message to see the details, useful for debugging and monitoring.
+
+![pi-temmate-ui popup](https://raw.githubusercontent.com/ross-jill-ws/pi-teammate-ui/refs/heads/main/documents/20260406174716.png)
+
+### Run
+
+No install needed — just run it alongside your team:
 
 ```bash
-npm install -g pi-teammate-ui
-```
-
-Then run it alongside your team:
-
-```bash
-pi-teammate-ui
+npx pi-teammate-ui
 ```
 
 It reads directly from the shared team SQLite database in `~/.pi/pi-teammate/<channel>/team.db`, so no additional configuration is needed — just start it while your agents are running.
