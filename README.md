@@ -25,18 +25,37 @@ pi remove npm:pi-teammate
 
 ## Quick Start
 
-Open three terminal windows and start three `pi` sessions — a designer, a developer, and a tester:
+Each teammate runs from its own working directory, and every working directory **must contain a `persona.yaml`** file that defines the agent's identity (name, role, system prompt). No other files are required. See [Writing a `persona.yaml`](#writing-a-personayaml) below for the full field reference and examples.
+
+Set up three directories like this:
+
+```
+project/
+├── designer/
+│   └── persona.yaml
+├── developer/
+│   └── persona.yaml
+└── tester/
+    └── persona.yaml
+```
+
+Then open three terminal windows, `cd` into each directory, and start a `pi` session:
 
 ```bash
-# Terminal 1 — create a new team and join as the designer
-pi --team-channel forex-rt --agent-name designer --team-new
+# Terminal 1 — cd into designer/, create a new team and join (joins as "Rachel")
+cd project/designer
+pi --team-channel forex-rt --team-new
 
-# Terminal 2 — join as the developer
-pi --team-channel forex-rt --agent-name developer
+# Terminal 2 — cd into developer/, join the team (joins as "Drew")
+cd project/developer
+pi --team-channel forex-rt
 
-# Terminal 3 — join as the tester
-pi --team-channel forex-rt --agent-name tester
+# Terminal 3 — cd into tester/, join the team (joins as "Joseph")
+cd project/tester
+pi --team-channel forex-rt
 ```
+
+You can also pass `--agent-name <name>` to override the agent's display name, but since each `persona.yaml` already has a `name` field (`Rachel` for the designer, `Drew` for the developer, `Joseph` for the tester), it's picked up automatically and `--agent-name` is unnecessary.
 
 Now type a prompt into any agent (e.g. the designer):
 

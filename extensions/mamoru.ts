@@ -291,10 +291,16 @@ export class Mamoru {
       additions += `\n- NEVER reference files, images, or attachments only in the "content" text — always put them in the detail file so the recipient can actually access them.`;
     }
 
+    // Events MAMORU handles automatically — the LLM must not emit these
+    additions += `\n\nEvents handled automatically by MAMORU (do NOT send these yourself):`;
+    additions += `\n- task_ack: when you receive a task_req, MAMORU automatically replies with task_ack on your behalf. Do NOT send another task_ack — just start working on the task.`;
+    additions += `\n- task_reject: automatically sent by MAMORU when you're busy.`;
+    additions += `\n- task_cancel_ack: automatically sent by MAMORU when a task_cancel arrives.`;
+    additions += `\n- ping / pong: heartbeat events handled by MAMORU.`;
+
     // Message content format rules (the "content" field is spoken aloud via TTS)
     additions += `\n\nMessage content format rules (max ${this.getContentWordLimit()} words, will be spoken aloud):`;
     additions += `\n- task_req: always start with the recipient's name. e.g. "Designer, please review the homepage layout"`;
-    additions += `\n- task_ack: just say "acknowledged" or "roger"`;
     additions += `\n- task_update: always start with the recipient's name + "task status update". e.g. "Developer, task status update, styling fixes applied"`;
     additions += `\n- task_done: always start with the recipient's name. e.g. "Developer, code review complete, all good"`;
     additions += `\n- task_fail: always start with the recipient's name + "we are having a problem". e.g. "Developer, we are having a problem, build failed"`;

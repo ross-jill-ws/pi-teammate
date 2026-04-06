@@ -53,6 +53,25 @@ export function createSendMessageTool(opts: {
         );
       }
 
+      // Reject MAMORU-reserved events. These are sent automatically by the
+      // guardian process and must never be emitted by the LLM, otherwise the
+      // recipient would see duplicate acknowledgements.
+      const MAMORU_RESERVED_EVENTS: readonly MessageEvent[] = [
+        "task_ack",
+        "task_reject",
+        "task_cancel_ack",
+        "pong",
+        "ping",
+      ];
+      if (MAMORU_RESERVED_EVENTS.includes(params.event as MessageEvent)) {
+        throw new Error(
+          `Event "${params.event}" is reserved for MAMORU and is sent automatically. ` +
+          `You do not need to (and must not) send it yourself. ` +
+          `When you receive a task_req, MAMORU has already acknowledged it on your behalf — ` +
+          `just start working on the task and send task_update / task_done / task_fail messages.`,
+        );
+      }
+
       // Validate content length (use persona's contentWordLimit if set)
       const wordLimit = mamoru.getContentWordLimit();
       if (countWords(params.content) > wordLimit) {

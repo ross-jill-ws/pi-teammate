@@ -223,6 +223,57 @@ describe("send_message", () => {
     ).rejects.toThrow('Unknown event "unknown_event"');
   });
 
+  test("rejects task_ack (MAMORU-reserved event)", async () => {
+    const { sendMessage } = setup();
+    expect(
+      sendMessage.execute(
+        "tc1",
+        { to: "remote-1", event: "task_ack", task_id: 1, content: "acknowledged" },
+        undefined, undefined, dummyCtx,
+      ),
+    ).rejects.toThrow(/reserved for MAMORU/);
+  });
+
+  test("rejects task_reject (MAMORU-reserved event)", async () => {
+    const { sendMessage } = setup();
+    expect(
+      sendMessage.execute(
+        "tc1",
+        { to: "remote-1", event: "task_reject", task_id: 1, content: "busy" },
+        undefined, undefined, dummyCtx,
+      ),
+    ).rejects.toThrow(/reserved for MAMORU/);
+  });
+
+  test("rejects task_cancel_ack (MAMORU-reserved event)", async () => {
+    const { sendMessage } = setup();
+    expect(
+      sendMessage.execute(
+        "tc1",
+        { to: "remote-1", event: "task_cancel_ack", task_id: 1, content: "cancelled" },
+        undefined, undefined, dummyCtx,
+      ),
+    ).rejects.toThrow(/reserved for MAMORU/);
+  });
+
+  test("rejects ping/pong (MAMORU-reserved events)", async () => {
+    const { sendMessage } = setup();
+    expect(
+      sendMessage.execute(
+        "tc1",
+        { to: "remote-1", event: "ping", content: "ping" },
+        undefined, undefined, dummyCtx,
+      ),
+    ).rejects.toThrow(/reserved for MAMORU/);
+    expect(
+      sendMessage.execute(
+        "tc2",
+        { to: "remote-1", event: "pong", content: "pong" },
+        undefined, undefined, dummyCtx,
+      ),
+    ).rejects.toThrow(/reserved for MAMORU/);
+  });
+
   test("sets task_id from parameter for task-related events", async () => {
     const { sendMessage, db } = setup();
     const result = await sendMessage.execute(

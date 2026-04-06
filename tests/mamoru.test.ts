@@ -1021,8 +1021,19 @@ describe("Mamoru – buildSystemPromptAdditions", () => {
     expect(result!.systemPrompt).toContain("base prompt");
     expect(result!.systemPrompt).toContain("Message content format rules");
     expect(result!.systemPrompt).toContain("task_req: always start with the recipient");
-    expect(result!.systemPrompt).toContain("task_ack: just say");
     expect(result!.systemPrompt).toContain("broadcast: always start with");
+  });
+
+  test("system prompt instructs LLM NOT to send MAMORU-reserved events", () => {
+    const { mamoru } = createMamoru();
+    const result = mamoru.buildSystemPromptAdditions("base prompt");
+    expect(result).toBeDefined();
+    expect(result!.systemPrompt).toContain("handled automatically by MAMORU");
+    expect(result!.systemPrompt).toContain("do NOT send these yourself");
+    expect(result!.systemPrompt).toContain("task_ack");
+    expect(result!.systemPrompt).toContain("task_reject");
+    // And it must NOT tell the LLM how to phrase a task_ack anymore
+    expect(result!.systemPrompt).not.toContain('task_ack: just say');
   });
 
   test("adds persona info when persona is set", () => {
