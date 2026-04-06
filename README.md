@@ -265,7 +265,7 @@ While `pi-teammate` runs inside each terminal, it can be hard to track the whole
 
 You can click any message to see the details, useful for debugging and monitoring.
 
-![pi-temmate-ui popup](https://raw.githubusercontent.com/ross-jill-ws/pi-teammate-ui/refs/heads/main/documents/20260406174716.png)
+![pi-temmate-ui popup](https://github.com/ross-jill-ws/pi-teammate/blob/main/documents/20260406174716.png?raw=true)
 
 ### Run
 
