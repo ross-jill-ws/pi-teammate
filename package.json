@@ -1,6 +1,6 @@
 {
   "name": "pi-teammate",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "Pi agent-to-agent team communication via shared SQLite message bus with MAMORU guardian",
   "repository": {
     "type": "git",

@@ -153,6 +153,13 @@ export default function (pi: ExtensionAPI) {
     mamoru.start();
     startUptimeDisplay(ctx);
     activateSendMessageTool();
+
+    // Start TTS poller for this channel (no-op if TTS not enabled, or
+    // if poller already running). This must happen before mamoru.start()
+    // emits the agent_join broadcast — but mamoru.start() is synchronous
+    // and the TTS poller picks up queued items on its next tick, so the
+    // ordering is fine either way.
+    tts?.onSessionStart(ctx, channel);
   }
 
   // ── Commands ────────────────────────────────────────────────────
@@ -297,9 +304,7 @@ export default function (pi: ExtensionAPI) {
     const forceNew = pi.getFlag("team-new") as boolean | undefined;
     bootstrapMamoru(ctx, channel, agentName, forceNew || false);
     console.log(`[teammate] Joined "${channel}" as "${agentName}"${forceNew ? " (clean start)" : ""}`);
-
-    // Start TTS polling for this channel
-    tts?.onSessionStart(ctx, channel);
+    // TTS poller is started inside bootstrapMamoru.
   });
 
   // Inject persona + task context into system prompt

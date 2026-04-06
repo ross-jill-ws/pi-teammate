@@ -276,7 +276,11 @@ export function setupTts(
 
       ctx.ui.setStatus("tts", "audio: on");
 
-      if (channel) {
+      // Start the poll timer once a channel is active. Guard against
+      // double-init in case onSessionStart is called multiple times
+      // (e.g. once with null from session_start, then again with a real
+      // channel from bootstrapMamoru on /team-join).
+      if (channel && !pollTimer) {
         pollTimer = setInterval(() => drain(), POLL_INTERVAL_MS);
       }
     },
