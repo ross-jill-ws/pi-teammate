@@ -318,7 +318,12 @@ export class Mamoru {
       const requesterName = this.getAgentDisplayName(this.activeTask.requesterSessionId);
       additions += `\n\nYou are currently working on a task (task #${this.activeTask.taskId}) requested by "${requesterName}" (session: ${this.activeTask.requesterSessionId}).`;
       additions += ` When done, use the send_message tool to report back with event "task_done" or "task_fail", setting to="${this.activeTask.requesterSessionId}" and task_id=${this.activeTask.taskId}.`;
-      additions += `\nSend periodic "task_update" messages to prevent timeout.`;
+      additions += `\n\nIMPORTANT — task_update frequency:`;
+      additions += `\n- Send a "task_update" message after every important step or stage is finished (e.g. "plan drafted", "scaffold created", "API wired up", "tests passing", "refactor complete").`;
+      additions += `\n- You MUST send multiple task_update messages between task_ack and task_done unless the task is trivial (< 1 minute of work).`;
+      additions += `\n- Each update keeps the requester informed of progress, prevents timeout, and builds trust. A silent worker looks stuck even when it isn't.`;
+      additions += `\n- Do NOT batch updates — send each one as soon as its milestone completes.`;
+      additions += `\n- Keep the content brief (max ${this.getContentWordLimit()} words) and put any long details in the detail file.`;
     }
 
     if (additions) {

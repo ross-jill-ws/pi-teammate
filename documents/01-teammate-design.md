@@ -248,7 +248,7 @@ The designer reviews the visual result in the browser (it's the only agent with 
 
 A fully functional realtime forex dashboard, built in 8 minutes by three collaborating agents:
 
-![Final forex dashboard app](20260405122321.png)
+![Final forex dashboard app](20260406150945.png)
 
 The app shows live currency rates with change indicators, a responsive mobile-first layout matching the reference design, and real data from the ExchangeRate API.
 
