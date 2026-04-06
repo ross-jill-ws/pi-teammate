@@ -13,6 +13,120 @@ import type { MessageRow, MessagePayload } from "./types.ts";
 import { sendMessage, getMessagesByTaskId } from "./db.ts";
 import type { Mamoru } from "./mamoru.ts";
 import { getChannelDir, getDbPath, channelExists } from "./paths.ts";
+import { loadPersona } from "./persona.ts";
+
+// ── Slash-command usage hints ───────────────────────────────────
+//
+// We want to show a usage hint via ctx.ui.notify whenever the user has
+// typed (or autocompleted) one of our slash commands and is now positioned
+// to type its arguments — i.e. when the editor text is exactly "/cmd ".
+// This must work for both manual paths:
+//   1. typing "/team-join" then a space
+//   2. typing "/team-joi" then Tab (which expands to "/team-join ")
+//
+// pi-tui only invokes `getArgumentCompletions` for path #1 (after the next
+// keystroke), so we cannot rely on it for the Tab path. Instead we install
+// a global terminal-input listener and re-check the editor text after each
+// keystroke (deferred via setImmediate so the editor has finished applying
+// the input). The hint registry is built up alongside command registration
+// and exposed via getCommandHintRegistry().
+//
+// `getArgumentCompletions` is still wired up so the autocomplete dropdown
+// shows the example values for each command, but it is now a pure pure
+// function with no notification side-effects.
+
+export interface UsageHint {
+  /** One-line summary, shown via ctx.ui.notify when the user enters the command's argument area */
+  summary: string;
+  /** Concrete examples, shown both in the notification and as autocomplete entries */
+  examples: { value: string; label: string; description: string }[];
+}
+
+/** Format a UsageHint as a multi-line notification body. */
+export function formatUsageHint(hint: UsageHint): string {
+  const lines = [hint.summary];
+  if (hint.examples.length > 0) {
+    lines.push("", "Examples:");
+    for (const ex of hint.examples) {
+      lines.push(`  ${ex.value}`);
+      if (ex.description) lines.push(`    — ${ex.description}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function makeArgumentCompletions(
+  hint: UsageHint,
+): (prefix: string) => { value: string; label: string; description?: string }[] | null {
+  return (prefix: string) => {
+    const filtered = hint.examples.filter((e) =>
+      e.value.toLowerCase().startsWith(prefix.toLowerCase()),
+    );
+    return filtered.length > 0 ? filtered : null;
+  };
+}
+
+/**
+ * Install a terminal-input listener that fires the usage-hint notification
+ * whenever the editor text is exactly "/<cmd> " (one of our registered
+ * commands followed by a single space). The listener fires once per
+ * "entry" into that state — if the user types args, leaves the state, and
+ * comes back, the hint re-fires.
+ *
+ * Returns an unsubscribe function. Safe to call when ctx.ui.onTerminalInput
+ * is unavailable (e.g. RPC mode).
+ */
+export function setupHintWatcher(
+  ctx: ExtensionContext,
+  hints: Map<string, UsageHint>,
+): () => void {
+  if (typeof (ctx.ui as any).onTerminalInput !== "function") {
+    return () => {};
+  }
+  if (typeof (ctx.ui as any).getEditorText !== "function") {
+    return () => {};
+  }
+
+  // Track the command we last notified for, so we don't spam on every
+  // keystroke. Reset to null whenever the editor text leaves a "/cmd "
+  // state, so re-entering the state re-fires the hint.
+  let lastNotifiedCommand: string | null = null;
+
+  const check = () => {
+    let text: string;
+    try {
+      text = (ctx.ui as any).getEditorText();
+    } catch {
+      return;
+    }
+
+    // Match exactly "/<cmd> " — the user is at the start of arguments.
+    // We deliberately allow trailing whitespace-only content (the editor
+    // sometimes lands with a single space after a Tab completion) but not
+    // any non-whitespace, since once they start typing args they should
+    // not be re-notified.
+    const match = /^\/([\w-]+)\s*$/.exec(text);
+    if (match && /\s$/.test(text)) {
+      const cmd = match[1];
+      if (hints.has(cmd) && lastNotifiedCommand !== cmd) {
+        lastNotifiedCommand = cmd;
+        ctx.ui.notify(formatUsageHint(hints.get(cmd)!), "info");
+      }
+      return;
+    }
+
+    // Not in a "/cmd " state — reset so the next entry re-fires.
+    lastNotifiedCommand = null;
+  };
+
+  const handler = (_data: string) => {
+    // Defer until the editor has applied the input.
+    setImmediate(check);
+    return undefined;
+  };
+
+  return (ctx.ui as any).onTerminalInput(handler);
+}
 
 function formatTimestamp(ts: number): string {
   return new Date(ts).toLocaleString();
@@ -35,10 +149,26 @@ export function registerCommands(
   opts: {
     bootstrapMamoru: (ctx: ExtensionContext, channel: string, agentName: string) => void;
   },
-): void {
+): { hintRegistry: Map<string, UsageHint> } {
+  // Per-registration registry of slash-command usage hints. Built up below
+  // as each command is registered. Returned to the caller (index.ts) which
+  // wires up setupHintWatcher in session_start.
+  const hintRegistry = new Map<string, UsageHint>();
+
+  function defineHint(commandName: string, hint: UsageHint): UsageHint {
+    hintRegistry.set(commandName, hint);
+    return hint;
+  }
   // ── /team-create [name] ─────────────────────────────────────────
   pi.registerCommand("team-create", {
     description: "Create (or recreate) a team channel DB. Deletes existing channel data if present. Usage: /team-create [channelName]",
+    getArgumentCompletions: makeArgumentCompletions(defineHint("team-create", {
+        summary: "Usage: /team-create [channelName]",
+        examples: [
+          { value: "my-team", label: "my-team", description: "Create a channel named 'my-team'" },
+          { value: "dev", label: "dev", description: "Create a channel named 'dev'" },
+        ],
+      })),
     handler: async (args, ctx) => {
       const channelName = args.trim() || ctx.sessionManager.getSessionId();
       const channelDir = getChannelDir(channelName);
@@ -68,6 +198,14 @@ export function registerCommands(
   // ── /team-join <channel> [agentName] ────────────────────────────
   pi.registerCommand("team-join", {
     description: "Join a team channel and start polling. Usage: /team-join <channel> [agentName]",
+    getArgumentCompletions: makeArgumentCompletions(defineHint("team-join", {
+        summary: "Usage: /team-join <channel> [agentName]",
+        examples: [
+          { value: "dev", label: "dev", description: "Join channel 'dev' (agent name from persona.yaml or session id)" },
+          { value: "dev Alice", label: "dev Alice", description: "Join channel 'dev' as 'Alice'" },
+          { value: "my-team Bob", label: "my-team Bob", description: "Join channel 'my-team' as 'Bob'" },
+        ],
+      })),
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const channel = parts[0];
@@ -76,7 +214,19 @@ export function registerCommands(
         return;
       }
 
-      const agentName = parts[1] || ctx.sessionManager.getSessionId();
+      // Agent name precedence: explicit arg > persona.yaml name > session id
+      let agentName = parts[1];
+      if (!agentName) {
+        try {
+          const persona = loadPersona(ctx.cwd);
+          if (persona?.name) agentName = persona.name;
+        } catch {
+          // ignore persona errors here — they're already surfaced on session_start
+        }
+      }
+      if (!agentName) {
+        agentName = ctx.sessionManager.getSessionId();
+      }
 
       // Check if already joined
       const existing = getMamoru();
@@ -100,6 +250,10 @@ export function registerCommands(
   // ── /team-leave ─────────────────────────────────────────────────
   pi.registerCommand("team-leave", {
     description: "Leave the current team channel",
+    getArgumentCompletions: makeArgumentCompletions(defineHint("team-leave", {
+        summary: "Usage: /team-leave (no arguments)",
+        examples: [],
+      })),
     handler: async (_args, ctx) => {
       const mamoru = getMamoru();
       if (!mamoru) {
@@ -119,6 +273,13 @@ export function registerCommands(
   // ── /team-send <to> <message> ──────────────────────────────────
   pi.registerCommand("team-send", {
     description: "Send a manual message for debugging. Usage: /team-send <to> <message>",
+    getArgumentCompletions: makeArgumentCompletions(defineHint("team-send", {
+        summary: "Usage: /team-send <to_session_id> <message>",
+        examples: [
+          { value: "alice hello", label: "alice hello", description: "Send 'hello' to agent 'alice'" },
+          { value: "<session_id> <message>", label: "<session_id> <message>", description: "Manually send a debug message to a teammate" },
+        ],
+      })),
     handler: async (args, ctx) => {
       const mamoru = getMamoru();
       if (!mamoru) {
@@ -211,6 +372,14 @@ export function registerCommands(
   // ── /team-history [n] ──────────────────────────────────────────
   pi.registerCommand("team-history", {
     description: "Show last N messages on the channel. Usage: /team-history [n] (default 20)",
+    getArgumentCompletions: makeArgumentCompletions(defineHint("team-history", {
+        summary: "Usage: /team-history [n] (default 20)",
+        examples: [
+          { value: "10", label: "10", description: "Show last 10 messages" },
+          { value: "50", label: "50", description: "Show last 50 messages" },
+          { value: "100", label: "100", description: "Show last 100 messages" },
+        ],
+      })),
     handler: async (args, ctx) => {
       const mamoru = getMamoru();
       if (!mamoru) {
@@ -338,6 +507,12 @@ export function registerCommands(
   // ── /task-cancel [task_id] ──────────────────────────────────────
   pi.registerCommand("task-cancel", {
     description: "Cancel an outbound task. Usage: /task-cancel <task_id>",
+    getArgumentCompletions: makeArgumentCompletions(defineHint("task-cancel", {
+        summary: "Usage: /task-cancel <task_id>",
+        examples: [
+          { value: "<task_id>", label: "<task_id>", description: "Numeric ID of the outbound task to cancel" },
+        ],
+      })),
     handler: async (args, ctx) => {
       const mamoru = getMamoru();
       if (!mamoru) {
@@ -611,6 +786,12 @@ export function registerCommands(
   // ── /task-history <task_id> ─────────────────────────────────────
   pi.registerCommand("task-history", {
     description: "Show all messages for a task. Usage: /task-history <task_id>",
+    getArgumentCompletions: makeArgumentCompletions(defineHint("task-history", {
+        summary: "Usage: /task-history <task_id>",
+        examples: [
+          { value: "<task_id>", label: "<task_id>", description: "Numeric task ID to inspect" },
+        ],
+      })),
     handler: async (args, ctx) => {
       const mamoru = getMamoru();
       if (!mamoru) {
@@ -652,4 +833,6 @@ export function registerCommands(
       }
     },
   });
+
+  return { hintRegistry };
 }

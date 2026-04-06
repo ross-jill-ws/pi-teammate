@@ -100,10 +100,12 @@ export function createBetterSqlite3Compat(inner: InstanceType<typeof BunDatabase
 export interface MockPi {
   sentUserMessages: Array<{ content: string | any; options?: any }>;
   registeredTools: Map<string, any>;
+  registeredCommands: Map<string, any>;
   emittedEvents: Array<{ name: string; data: any }>;
   eventHandlers: Map<string, Function[]>;
   sendUserMessage(content: string | any, options?: any): void;
   registerTool(tool: any): void;
+  registerCommand(name: string, def: any): void;
   events: {
     emit(name: string, data: any): void;
     on(name: string, cb: Function): void;
@@ -115,6 +117,7 @@ export interface MockPi {
 export function createMockPi(): MockPi {
   const sentUserMessages: MockPi["sentUserMessages"] = [];
   const registeredTools = new Map<string, any>();
+  const registeredCommands = new Map<string, any>();
   const emittedEvents: MockPi["emittedEvents"] = [];
   const eventHandlers = new Map<string, Function[]>();
   const flags = new Map<string, string | boolean>();
@@ -122,6 +125,7 @@ export function createMockPi(): MockPi {
   return {
     sentUserMessages,
     registeredTools,
+    registeredCommands,
     emittedEvents,
     eventHandlers,
     flags,
@@ -132,6 +136,10 @@ export function createMockPi(): MockPi {
 
     registerTool(tool: any) {
       registeredTools.set(tool.name ?? tool.tool?.name ?? "unknown", tool);
+    },
+
+    registerCommand(name: string, def: any) {
+      registeredCommands.set(name, def);
     },
 
     events: {
@@ -164,31 +172,55 @@ export interface MockCtx {
   newSessionCalled: boolean;
   widgets: Map<string, any>;
   statuses: Map<string, string | undefined>;
+  /** Editor text returned by ctx.ui.getEditorText() (settable for tests). */
+  editorText: string;
+  /** Listeners registered via ctx.ui.onTerminalInput(). */
+  terminalInputListeners: Array<(data: string) => any>;
   ui: {
     notify(msg: string, type?: string): void;
     setWidget(key: string, content: any): void;
     setStatus(key: string, text: string | undefined): void;
+    getEditorText(): string;
+    onTerminalInput(handler: (data: string) => any): () => void;
   };
+  /** Test helper: simulate the user typing/pasting and update editorText. */
+  simulateInput(data: string, newEditorText?: string): void;
   isIdle(): boolean;
   abort(): void;
   newSession(options?: any): Promise<any>;
   sessionManager: { getSessionId(): string };
 }
 
-export function createMockCtx(sessionId?: string): MockCtx {
-  const sid = sessionId ?? `test-session-${Date.now()}`;
+export interface CreateMockCtxOptions {
+  sessionId?: string;
+  cwd?: string;
+}
+
+export function createMockCtx(
+  sessionIdOrOpts?: string | CreateMockCtxOptions,
+): MockCtx {
+  const opts: CreateMockCtxOptions =
+    typeof sessionIdOrOpts === "string"
+      ? { sessionId: sessionIdOrOpts }
+      : sessionIdOrOpts ?? {};
+  const sid = opts.sessionId ?? `test-session-${Date.now()}`;
+  const cwd = opts.cwd ?? "/tmp/test";
   const notifications: MockCtx["notifications"] = [];
   const widgets = new Map<string, any>();
   const statuses = new Map<string, string | undefined>();
 
+  const terminalInputListeners: Array<(data: string) => any> = [];
+
   const ctx: MockCtx = {
-    cwd: "/tmp/test",
+    cwd,
     notifications,
     aborted: false,
     idle: true,
     newSessionCalled: false,
     widgets,
     statuses,
+    editorText: "",
+    terminalInputListeners,
 
     ui: {
       notify(msg: string, type?: string) {
@@ -200,6 +232,24 @@ export function createMockCtx(sessionId?: string): MockCtx {
       setStatus(key: string, text: string | undefined) {
         statuses.set(key, text);
       },
+      getEditorText() {
+        return ctx.editorText;
+      },
+      onTerminalInput(handler: (data: string) => any) {
+        terminalInputListeners.push(handler);
+        return () => {
+          const idx = terminalInputListeners.indexOf(handler);
+          if (idx >= 0) terminalInputListeners.splice(idx, 1);
+        };
+      },
+    },
+
+    simulateInput(data: string, newEditorText?: string) {
+      // Update editor text first (mimics the editor processing the input).
+      if (newEditorText !== undefined) {
+        ctx.editorText = newEditorText;
+      }
+      for (const h of terminalInputListeners) h(data);
     },
 
     isIdle() {

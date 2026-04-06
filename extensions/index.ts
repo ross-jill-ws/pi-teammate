@@ -11,7 +11,7 @@ import { loadPersona } from "./persona.ts";
 import { Mamoru } from "./mamoru.ts";
 import { Roster } from "./roster.ts";
 import { createSendMessageTool } from "./tools/send-message.ts";
-import { registerCommands } from "./commands.ts";
+import { registerCommands, setupHintWatcher } from "./commands.ts";
 import { DEFAULT_MAMORU_CONFIG } from "./types.ts";
 import { setupPrefixKeys } from "./prefix-keys.ts";
 import { getChannelDir, getDbPath, getTeammateDir, channelExists } from "./paths.ts";
@@ -33,6 +33,7 @@ export default function (pi: ExtensionAPI) {
   let activeDb: Database.Database | null = null;
   let extensionCtx: ExtensionContext | null = null;
   let uptimeTimer: ReturnType<typeof setInterval> | null = null;
+  let unsubscribeHintWatcher: (() => void) | null = null;
 
   // ── TTS (conditional on ELEVENLABS_API_KEY) ────────────────────
   const tts = isTtsEnabled() ? setupTts(pi, () => activeDb) : null;
@@ -155,7 +156,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ── Commands ────────────────────────────────────────────────────
-  registerCommands(
+  const { hintRegistry } = registerCommands(
     pi,
     () => mamoru,
     (m) => {
@@ -215,6 +216,14 @@ export default function (pi: ExtensionAPI) {
 
     // Hide send_message from the LLM until a team is joined
     deactivateSendMessageTool();
+
+    // Install the slash-command usage-hint watcher (fires ctx.ui.notify
+    // whenever the editor text becomes "/team-... " or "/task-... ").
+    if (unsubscribeHintWatcher) {
+      unsubscribeHintWatcher();
+      unsubscribeHintWatcher = null;
+    }
+    unsubscribeHintWatcher = setupHintWatcher(ctx, hintRegistry);
 
     // Show TTS status (will be set to "audio: on" if API key exists)
     if (!isTtsEnabled()) {
@@ -318,6 +327,10 @@ export default function (pi: ExtensionAPI) {
     if (uptimeTimer) {
       clearInterval(uptimeTimer);
       uptimeTimer = null;
+    }
+    if (unsubscribeHintWatcher) {
+      unsubscribeHintWatcher();
+      unsubscribeHintWatcher = null;
     }
     mamoru?.stop();
     mamoru = null;
