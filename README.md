@@ -232,3 +232,23 @@ Or run the test script:
 ```bash
 bun run experiments/test-tts-harness.ts
 ```
+
+## Team Monitor UI
+
+While `pi-teammate` runs inside each terminal, it can be hard to track the whole team's progress at a glance. For that, install **[pi-teammate-ui](https://www.npmjs.com/package/pi-teammate-ui)** — a standalone web dashboard that visualizes the team's activity in real time: who's online, what tasks are in flight, message flow, and more.
+
+![pi-teammate-ui screenshot](https://raw.githubusercontent.com/ross-jill-ws/pi-teammate-ui/refs/heads/main/documents/20260406150120.png)
+
+### Install
+
+```bash
+npm install -g pi-teammate-ui
+```
+
+Then run it alongside your team:
+
+```bash
+pi-teammate-ui
+```
+
+It reads directly from the shared team SQLite database in `~/.pi/pi-teammate/<channel>/team.db`, so no additional configuration is needed — just start it while your agents are running.
