@@ -443,7 +443,6 @@ export class Mamoru {
         break;
 
       case "broadcast":
-        console.log(`[teammate] ${this.agentName}: processMessage broadcast intent=${payload.intent} from=${msg.from_agent} msgId=${msg.message_id}`);
         this.logEvent("recv", "broadcast", msg.from_agent, msg.task_id, payload.content,
           payload.intent !== "agent_join" && payload.intent !== "agent_leave" && payload.intent !== "agent_status_change");
         if (payload.intent === "agent_join") {
@@ -457,10 +456,13 @@ export class Mamoru {
               last_heartbeat: agent.last_heartbeat ?? Date.now(),
             });
             this.refreshSendMessageTool();
+            this.ctx.ui.notify(`"${agent.agent_name}" joined the channel`, "info");
           }
         } else if (payload.intent === "agent_leave") {
+          const leaveName = this.getAgentDisplayName(msg.from_agent);
           this.roster.remove(msg.from_agent);
           this.refreshSendMessageTool();
+          this.ctx.ui.notify(`"${leaveName}" left the channel`, "info");
         } else if (payload.intent === "agent_status_change") {
           const agent = getAgentBySession(this.db, msg.from_agent);
           if (agent) {
