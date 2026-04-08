@@ -24,6 +24,7 @@ const MODEL_ID = "eleven_v3";
 const OUTPUT_FORMAT = "mp3_44100_128";
 const CACHE_DIR = join(homedir(), ".pi", "pi-teammate", "audios");
 const POLL_INTERVAL_MS = 300;
+const STALE_CLAIM_MS = 120_000;
 
 const VOICE_SETTINGS = {
   stability: 0.4,
@@ -44,6 +45,10 @@ interface VoiceQueueRow {
   voice_id: string | null;
 }
 
+interface VoiceQueueColumnInfo {
+  name: string;
+}
+
 function initVoiceQueue(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS voice_queue (
@@ -51,9 +56,16 @@ function initVoiceQueue(db: Database.Database): void {
       text TEXT NOT NULL,
       voice_id TEXT,
       completed INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      claimed_at INTEGER
     )
   `);
+
+  const columns = db.prepare("PRAGMA table_info(voice_queue)").all() as VoiceQueueColumnInfo[];
+  const hasClaimedAt = columns.some((column) => column.name === "claimed_at");
+  if (!hasClaimedAt) {
+    db.exec("ALTER TABLE voice_queue ADD COLUMN claimed_at INTEGER");
+  }
 }
 
 function enqueueToDb(db: Database.Database, text: string, voiceId: string | null): void {
@@ -66,7 +78,28 @@ function enqueueToDb(db: Database.Database, text: string, voiceId: string | null
  * Atomically claim the next pending row, but ONLY if nothing is currently playing.
  * completed: 0=pending, 1=playing, 2=done.
  */
-function claimNext(db: Database.Database): VoiceQueueRow | null {
+function recoverStaleClaims(db: Database.Database, now: number = Date.now()): number {
+  const cutoff = now - STALE_CLAIM_MS;
+  const result = db.prepare(`
+    UPDATE voice_queue
+    SET completed = 0, claimed_at = NULL
+    WHERE completed = 1
+      AND (
+        (claimed_at IS NOT NULL AND claimed_at < ?)
+        OR
+        (claimed_at IS NULL AND created_at < ?)
+      )
+  `).run(cutoff, cutoff);
+
+  if (result.changes > 0) {
+    console.warn(`[tts] Recovered ${result.changes} stale voice queue claim${result.changes === 1 ? "" : "s"}.`);
+  }
+  return result.changes;
+}
+
+function claimNext(db: Database.Database, now: number = Date.now()): VoiceQueueRow | null {
+  recoverStaleClaims(db, now);
+
   const playing = db.prepare(
     "SELECT COUNT(*) as cnt FROM voice_queue WHERE completed = 1",
   ).get() as { cnt: number };
@@ -78,14 +111,14 @@ function claimNext(db: Database.Database): VoiceQueueRow | null {
   if (!row) return null;
 
   const result = db.prepare(
-    "UPDATE voice_queue SET completed = 1 WHERE id = ? AND completed = 0",
-  ).run(row.id);
+    "UPDATE voice_queue SET completed = 1, claimed_at = ? WHERE id = ? AND completed = 0",
+  ).run(now, row.id);
   if (result.changes === 0) return null;
   return row;
 }
 
 function markDone(db: Database.Database, id: number): void {
-  db.prepare("UPDATE voice_queue SET completed = 2 WHERE id = ?").run(id);
+  db.prepare("UPDATE voice_queue SET completed = 2, claimed_at = NULL WHERE id = ?").run(id);
 }
 
 // ── ElevenLabs TTS with MP3 caching ─────────────────────────────
@@ -185,7 +218,16 @@ export function isEnabled(): boolean {
 export function setupTts(
   pi: ExtensionAPI,
   getDb: () => Database.Database | null,
+  deps?: {
+    speakImpl?: (text: string, voiceId: string | null) => Promise<void>;
+    setIntervalImpl?: typeof setInterval;
+    clearIntervalImpl?: typeof clearInterval;
+  },
 ): { onSessionStart: (ctx: ExtensionContext, channel: string | null) => void; onShutdown: () => void } {
+  const speakImpl = deps?.speakImpl ?? speak;
+  const setIntervalImpl = deps?.setIntervalImpl ?? setInterval;
+  const clearIntervalImpl = deps?.clearIntervalImpl ?? clearInterval;
+
   let selfVoiceId: string | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let draining = false;
@@ -206,13 +248,16 @@ export function setupTts(
     return db;
   }
 
-  function enqueue(text: string, voiceId: string | null): void {
+  function enqueue(text: string, voiceId: string | null): boolean {
     const db = ensureVoiceQueue();
-    if (!db) return;
+    if (!db) return false;
     try {
       enqueueToDb(db, text, voiceId);
+      void drain();
+      return true;
     } catch {
       // DB might be busy; skip silently
+      return false;
     }
   }
 
@@ -231,7 +276,7 @@ export function setupTts(
           break;
         }
         if (!claimed) break;
-        await speak(claimed.text, claimed.voice_id);
+        await speakImpl(claimed.text, claimed.voice_id);
         try {
           markDone(db, claimed.id);
         } catch {
@@ -256,7 +301,9 @@ export function setupTts(
         selfVoiceId = loadVoiceId(ctx.cwd);
       }
       ctx.ui.notify(`Speaking: "${text}" (voice: ${selfVoiceId ?? DEFAULT_VOICE_ID})`, "info");
-      enqueue(text, selfVoiceId);
+      if (!enqueue(text, selfVoiceId)) {
+        await speakImpl(text, selfVoiceId);
+      }
     },
   });
 
@@ -276,18 +323,17 @@ export function setupTts(
 
       ctx.ui.setStatus("tts", "audio: on");
 
-      // Start the poll timer once a channel is active. Guard against
-      // double-init in case onSessionStart is called multiple times
-      // (e.g. once with null from session_start, then again with a real
-      // channel from bootstrapMamoru on /team-join).
-      if (channel && !pollTimer) {
-        pollTimer = setInterval(() => drain(), POLL_INTERVAL_MS);
+      // Start the poll timer once per session. This lets /tts-test work
+      // even before a team DB exists, and also covers the later /team-join
+      // path because getDb() will begin returning the active DB once joined.
+      if (!pollTimer) {
+        pollTimer = setIntervalImpl(() => drain(), POLL_INTERVAL_MS) as ReturnType<typeof setInterval>;
       }
     },
 
     onShutdown() {
       if (pollTimer) {
-        clearInterval(pollTimer);
+        clearIntervalImpl(pollTimer);
         pollTimer = null;
       }
     },

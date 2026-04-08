@@ -4,10 +4,10 @@ import type Database from "better-sqlite3";
 export class Roster {
   private entries: Map<string, RosterEntry> = new Map(); // keyed by session_id
 
-  /** Populate roster from agents table (call on startup). Excludes self. */
+  /** Populate roster from agents table (call on startup). Excludes self and inactive agents. */
   initFromDb(db: Database.Database, selfSessionId: string): void {
     const rows = db
-      .prepare("SELECT session_id, agent_name, description, status, last_heartbeat FROM agents WHERE session_id != @selfSessionId")
+      .prepare("SELECT session_id, agent_name, description, status, last_heartbeat FROM agents WHERE session_id != @selfSessionId AND status != 'inactive'")
       .all({ selfSessionId }) as AgentRow[];
 
     this.entries.clear();

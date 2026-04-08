@@ -86,6 +86,14 @@ Leave the current team channel. Stops MAMORU polling and broadcasts a leave noti
 /team-leave
 ```
 
+#### `/team-remove-inactive`
+
+Remove stale inactive sessions whose agent name matches your current agent name. For each matching inactive session, the command emits the same `agent_leave` broadcast used by `/team-leave`, waits for that broadcast to be processed locally, then removes the stale session record from the database before moving to the next one.
+
+```
+/team-remove-inactive
+```
+
 #### `/team-status`
 
 Show the current team connection status: channel name, agent name, session ID, availability status, active task (if any), and number of outbound tasks.

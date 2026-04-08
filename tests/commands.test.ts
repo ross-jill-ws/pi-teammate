@@ -126,7 +126,7 @@ describe("/team-join agent name resolution", () => {
 describe("argument completion dropdowns", () => {
   test("registers getArgumentCompletions on team-* / task-* commands", () => {
     const { pi } = setup();
-    for (const name of ["team-create", "team-join", "team-leave", "team-send", "team-history", "task-cancel", "task-history"]) {
+    for (const name of ["team-create", "team-join", "team-leave", "team-remove-inactive", "team-send", "team-history", "task-cancel", "task-history"]) {
       const cmd = pi.registeredCommands.get(name);
       expect(cmd).toBeDefined();
       expect(typeof cmd.getArgumentCompletions).toBe("function");
@@ -176,7 +176,7 @@ describe("argument completion dropdowns", () => {
 describe("hint registry", () => {
   test("registerCommands populates hintRegistry for all team-/task- commands", () => {
     const { hintRegistry } = setup();
-    for (const name of ["team-create", "team-join", "team-leave", "team-send", "team-history", "task-cancel", "task-history"]) {
+    for (const name of ["team-create", "team-join", "team-leave", "team-remove-inactive", "team-send", "team-history", "task-cancel", "task-history"]) {
       expect(hintRegistry.has(name)).toBe(true);
       const hint = hintRegistry.get(name)!;
       expect(hint.summary).toBeTruthy();
@@ -284,12 +284,12 @@ describe("setupHintWatcher", () => {
     expect(ctx.notifications.filter((n) => n.message.includes("Usage:"))).toHaveLength(0);
   });
 
-  test("fires for all 7 registered commands when their text appears", async () => {
+  test("fires for all 8 registered commands when their text appears", async () => {
     const { hintRegistry } = setup();
     const ctx = createMockCtx();
     setupHintWatcher(ctx as any, hintRegistry);
 
-    const expectedCommands = ["team-create", "team-join", "team-leave", "team-send", "team-history", "task-cancel", "task-history"];
+    const expectedCommands = ["team-create", "team-join", "team-leave", "team-remove-inactive", "team-send", "team-history", "task-cancel", "task-history"];
     for (const cmd of expectedCommands) {
       // Reset the state between commands so each one re-fires
       ctx.simulateInput("x", "");

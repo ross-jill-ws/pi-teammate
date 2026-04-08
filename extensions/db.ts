@@ -52,6 +52,41 @@ export function getAgentByName(db: Database.Database, name: string): AgentRow | 
   return (db.prepare("SELECT * FROM agents WHERE agent_name = ?").get(name) as AgentRow) ?? null;
 }
 
+export function getInactiveAgentsByName(
+  db: Database.Database,
+  name: string,
+  excludeSessionId?: string,
+): AgentRow[] {
+  if (excludeSessionId) {
+    return db.prepare(`
+      SELECT * FROM agents
+      WHERE agent_name = ?
+        AND status = 'inactive'
+        AND session_id != ?
+      ORDER BY COALESCE(last_heartbeat, 0) ASC, session_id ASC
+    `).all(name, excludeSessionId) as AgentRow[];
+  }
+
+  return db.prepare(`
+    SELECT * FROM agents
+    WHERE agent_name = ?
+      AND status = 'inactive'
+    ORDER BY COALESCE(last_heartbeat, 0) ASC, session_id ASC
+  `).all(name) as AgentRow[];
+}
+
+export function deleteAgent(db: Database.Database, sessionId: string): void {
+  const foreignKeysEnabled = !!db.pragma("foreign_keys", { simple: true });
+  if (foreignKeysEnabled) db.pragma("foreign_keys = OFF");
+
+  try {
+    db.prepare("DELETE FROM agent_cursors WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM agents WHERE session_id = ?").run(sessionId);
+  } finally {
+    if (foreignKeysEnabled) db.pragma("foreign_keys = ON");
+  }
+}
+
 // ── Message Functions ───────────────────────────────────────────
 
 export function sendMessage(

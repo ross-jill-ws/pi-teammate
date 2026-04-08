@@ -10,8 +10,8 @@ import { join } from "node:path";
 import { initSchema } from "./schema.ts";
 import { parsePayload, createPayload } from "./types.ts";
 import type { MessageRow, MessagePayload } from "./types.ts";
-import { sendMessage, getMessagesByTaskId } from "./db.ts";
-import type { Mamoru } from "./mamoru.ts";
+import { sendMessage, getMessagesByTaskId, getInactiveAgentsByName, deleteAgent } from "./db.ts";
+import { broadcastAgentLeave, type Mamoru } from "./mamoru.ts";
 import { getChannelDir, getDbPath, channelExists } from "./paths.ts";
 import { loadPersona } from "./persona.ts";
 
@@ -267,6 +267,51 @@ export function registerCommands(
       setMamoru(null);
       ctx.ui.setStatus("teammate", "mamoru: inactive");
       ctx.ui.notify(`Left channel "${channel}" (was "${name}")`, "info");
+    },
+  });
+
+  // ── /team-remove-inactive ──────────────────────────────────────
+  pi.registerCommand("team-remove-inactive", {
+    description: "Remove inactive teammate sessions that share your current agent name",
+    getArgumentCompletions: makeArgumentCompletions(defineHint("team-remove-inactive", {
+        summary: "Usage: /team-remove-inactive (no arguments)",
+        examples: [],
+      })),
+    handler: async (_args, ctx) => {
+      const mamoru = getMamoru();
+      if (!mamoru) {
+        ctx.ui.notify("Not connected to any team channel.", "warning");
+        return;
+      }
+
+      const Database = (await import("better-sqlite3")).default;
+      const dbPath = getDbPath(mamoru.getChannel());
+      const db = new Database(dbPath);
+      try {
+        const inactive = getInactiveAgentsByName(db, mamoru.getAgentName(), mamoru.getSessionId());
+        if (inactive.length === 0) {
+          ctx.ui.notify(`No inactive sessions found for "${mamoru.getAgentName()}".`, "info");
+          return;
+        }
+
+        for (const agent of inactive) {
+          broadcastAgentLeave(db, {
+            sessionId: agent.session_id,
+            agentName: agent.agent_name,
+            channel: mamoru.getChannel(),
+          });
+          mamoru.pollOnce();
+          deleteAgent(db, agent.session_id);
+        }
+
+        const removedIds = inactive.map((agent) => agent.session_id).join(", ");
+        ctx.ui.notify(
+          `Removed ${inactive.length} inactive \"${mamoru.getAgentName()}\" session${inactive.length === 1 ? "" : "s"}: ${removedIds}`,
+          "info",
+        );
+      } finally {
+        db.close();
+      }
     },
   });
 

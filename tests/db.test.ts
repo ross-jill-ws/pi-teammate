@@ -7,6 +7,8 @@ import {
   getActiveAgents,
   getAgentBySession,
   getAgentByName,
+  getInactiveAgentsByName,
+  deleteAgent,
   sendMessage,
   sendTaskReq,
   initCursor,
@@ -194,6 +196,53 @@ describe("getAgentByName", () => {
   test("returns null for non-existent name", () => {
     const db = createTestDb();
     expect(getAgentByName(db, "nobody")).toBeNull();
+  });
+});
+
+describe("getInactiveAgentsByName", () => {
+  test("returns only inactive agents with the matching name", () => {
+    const db = createTestDb();
+    registerAgent(db, { session_id: "self", agent_name: "Alice", description: null, provider: null, model: null, cwd: null });
+    registerAgent(db, { session_id: "inactive-1", agent_name: "Alice", description: null, provider: null, model: null, cwd: null, status: "inactive" });
+    registerAgent(db, { session_id: "inactive-2", agent_name: "Alice", description: null, provider: null, model: null, cwd: null, status: "inactive" });
+    registerAgent(db, { session_id: "busy-1", agent_name: "Alice", description: null, provider: null, model: null, cwd: null, status: "busy" });
+    registerAgent(db, { session_id: "inactive-other", agent_name: "Bob", description: null, provider: null, model: null, cwd: null, status: "inactive" });
+
+    const agents = getInactiveAgentsByName(db, "Alice", "self");
+
+    expect(agents.map((agent) => agent.session_id)).toEqual(["inactive-1", "inactive-2"]);
+  });
+});
+
+describe("deleteAgent", () => {
+  test("removes the agent row and any cursor rows", () => {
+    const db = createTestDb();
+    registerAgent(db, { session_id: "ghost", agent_name: "Ghost", description: null, provider: null, model: null, cwd: null, status: "inactive" });
+    initCursor(db, "ghost", "team-1");
+
+    deleteAgent(db, "ghost");
+
+    expect(getAgentBySession(db, "ghost")).toBeNull();
+    const cursor = db.prepare("SELECT * FROM agent_cursors WHERE session_id = ?").get("ghost");
+    expect(cursor).toBeUndefined();
+  });
+
+  test("removes the agent row even when messages still reference that session", () => {
+    const db = createTestDb();
+    db.pragma("foreign_keys = ON");
+
+    registerAgent(db, { session_id: "ghost", agent_name: "Ghost", description: null, provider: null, model: null, cwd: null, status: "inactive" });
+    sendMessage(db, {
+      from_agent: "ghost",
+      to_agent: null,
+      channel: "team-1",
+      task_id: null,
+      ref_message_id: null,
+      payload: makePayload("bye"),
+    });
+
+    expect(() => deleteAgent(db, "ghost")).not.toThrow();
+    expect(getAgentBySession(db, "ghost")).toBeNull();
   });
 });
 

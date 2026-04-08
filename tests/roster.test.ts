@@ -56,6 +56,21 @@ describe("Roster", () => {
       expect(roster.get("other-id")?.agent_name).toBe("Other");
       db.close();
     });
+
+    test("excludes inactive agents from roster", () => {
+      const db = createTestDb();
+      const roster = new Roster();
+
+      insertAgent(db, { session_id: "active-id", agent_name: "Active" });
+      insertAgent(db, { session_id: "inactive-id", agent_name: "Inactive", status: "inactive" });
+
+      roster.initFromDb(db, "self-id");
+
+      expect(roster.getAll()).toHaveLength(1);
+      expect(roster.get("active-id")?.agent_name).toBe("Active");
+      expect(roster.get("inactive-id")).toBeUndefined();
+      db.close();
+    });
   });
 
   describe("update", () => {

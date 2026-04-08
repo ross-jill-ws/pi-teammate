@@ -41,6 +41,28 @@ export interface MamoruEventLog {
   forwardedToLlm: boolean;
 }
 
+export function broadcastAgentLeave(
+  db: Database.Database,
+  params: {
+    sessionId: string;
+    agentName: string;
+    channel: string;
+  },
+): number {
+  const leaveContent = `${params.agentName} has left the channel`;
+  const leavePayload = createPayload("broadcast", leaveContent, {
+    intent: "agent_leave",
+  });
+  return sendMessage(db, {
+    from_agent: params.sessionId,
+    to_agent: null,
+    channel: params.channel,
+    task_id: null,
+    ref_message_id: null,
+    payload: JSON.stringify(leavePayload),
+  });
+}
+
 export class Mamoru {
   private db: Database.Database;
   private sessionId: string;
@@ -136,16 +158,10 @@ export class Mamoru {
 
     // Broadcast agent_leave
     const leaveContent = `${this.agentName} has left the channel`;
-    const leavePayload = createPayload("broadcast", leaveContent, {
-      intent: "agent_leave",
-    });
-    sendMessage(this.db, {
-      from_agent: this.sessionId,
-      to_agent: null,
+    broadcastAgentLeave(this.db, {
+      sessionId: this.sessionId,
+      agentName: this.agentName,
       channel: this.channel,
-      task_id: null,
-      ref_message_id: null,
-      payload: JSON.stringify(leavePayload),
     });
     this.logEvent("sent", "broadcast", "channel", null, leaveContent, false);
 
