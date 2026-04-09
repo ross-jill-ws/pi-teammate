@@ -27,6 +27,8 @@ pi remove npm:pi-teammate
 
 Each teammate runs from its own working directory, and every working directory **must contain a `persona.yaml`** file that defines the agent's identity (name, role, system prompt). No other files are required. See [Writing a `persona.yaml`](#writing-a-personayaml) below for the full field reference and examples.
 
+You can clone ready-made examples from [pi-teammate-samples](https://github.com/ross-jill-ws/pi-teammate-samples).
+
 Set up three directories like this:
 
 ```
