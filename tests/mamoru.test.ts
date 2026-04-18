@@ -862,6 +862,49 @@ describe("Mamoru – forwardToLlm", () => {
   });
 });
 
+// ── Event Log ───────────────────────────────────────────────────
+
+describe("Mamoru – event log", () => {
+  test("uses agent names for incoming events", () => {
+    const { mamoru, db } = createMamoru();
+    mamoru.start();
+
+    sendFromRemote(db, {
+      from: "remote-1",
+      fromName: "Parser 1",
+      to: "self-session",
+      event: "task_update",
+      content: "progress update",
+      taskId: 42,
+    });
+    mamoru.pollOnce();
+
+    const lastEntry = mamoru.getEventLog().at(-1);
+    expect(lastEntry?.direction).toBe("recv");
+    expect(lastEntry?.otherParty).toBe("Parser 1");
+  });
+
+  test("uses agent names for outbound events logged by tools", () => {
+    const { mamoru, db } = createMamoru();
+    mamoru.start();
+
+    registerAgent(db, {
+      session_id: "remote-1",
+      agent_name: "Verifier 1",
+      description: "QA",
+      provider: null,
+      model: null,
+      cwd: null,
+    });
+
+    mamoru.logOutbound("task_done", "remote-1", 42, "all done");
+
+    const lastEntry = mamoru.getEventLog().at(-1);
+    expect(lastEntry?.direction).toBe("sent");
+    expect(lastEntry?.otherParty).toBe("Verifier 1");
+  });
+});
+
 // ── Poll Loop ───────────────────────────────────────────────────
 
 describe("Mamoru – poll loop", () => {

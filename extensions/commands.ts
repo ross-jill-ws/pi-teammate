@@ -681,6 +681,7 @@ export function registerCommands(
         overlayOptions: {
           anchor: "top-right",
           width: "34%",
+          minWidth: 52,
           maxHeight: "100%",
           margin: 0,
           nonCapturing: true,

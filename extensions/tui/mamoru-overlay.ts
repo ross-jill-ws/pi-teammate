@@ -1,7 +1,8 @@
 /**
  * MAMORU event log overlay — shows all events handled by the guardian process.
  *
- * Anchored to the right side (1/3 width, 100% height). Non-capturing by default
+ * Anchored to the right side (~1/3 width with a minimum width, 100% height).
+ * Non-capturing by default
  * so the user can type in the editor while viewing events. Auto-scrolls to bottom.
  *
  * Opened via Ctrl+T then m, or /mamoru command.
@@ -215,8 +216,10 @@ export class MamoruOverlay implements Focusable {
       const vis = visibleWidth(s);
       return s + " ".repeat(Math.max(0, len - vis));
     };
-    const row = (content: string) =>
-      th.fg("border", "│") + pad(content, innerW) + th.fg("border", "│");
+    const row = (content: string) => {
+      const fitted = truncateToWidth(content, innerW);
+      return th.fg("border", "│") + pad(fitted, innerW) + th.fg("border", "│");
+    };
     const emptyRow = () => row("");
 
     // ── Header ────────────────────────────────────────────────────
