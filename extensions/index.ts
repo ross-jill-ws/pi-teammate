@@ -15,7 +15,7 @@ import { registerCommands, setupHintWatcher } from "./commands.ts";
 import { DEFAULT_MAMORU_CONFIG } from "./types.ts";
 import { setupPrefixKeys } from "./prefix-keys.ts";
 import { getChannelDir, getDbPath, getTeammateDir, channelExists } from "./paths.ts";
-import { isEnabled as isTtsEnabled, setupTts } from "./tts.ts";
+import { setupTts } from "./tts.ts";
 
 function formatUptime(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -35,9 +35,6 @@ export default function (pi: ExtensionAPI) {
   let uptimeTimer: ReturnType<typeof setInterval> | null = null;
   let unsubscribeHintWatcher: (() => void) | null = null;
 
-  // ── TTS (conditional on ELEVENLABS_API_KEY) ────────────────────
-  const tts = isTtsEnabled() ? setupTts(pi, () => activeDb) : null;
-
   // ── CLI Flags ───────────────────────────────────────────────────
   pi.registerFlag("team-channel", {
     description: "Auto-join a team channel on startup (requires --agent-name)",
@@ -52,6 +49,13 @@ export default function (pi: ExtensionAPI) {
     type: "boolean",
     default: false,
   });
+  pi.registerFlag("team-audio", {
+    description: "Force teammate audio on/off for this session (overrides ELEVENLABS_API_KEY)",
+    type: "string",
+  });
+
+  // ── TTS ──────────────────────────────────────────────────────────
+  const tts = setupTts(pi, () => activeDb);
 
   // ── Tools ───────────────────────────────────────────────────────
   const sendMessageTool = createSendMessageTool({
@@ -231,11 +235,6 @@ export default function (pi: ExtensionAPI) {
       unsubscribeHintWatcher = null;
     }
     unsubscribeHintWatcher = setupHintWatcher(ctx, hintRegistry);
-
-    // Show TTS status (will be set to "audio: on" if API key exists)
-    if (!isTtsEnabled()) {
-      ctx.ui.setStatus("tts", undefined);
-    }
 
     // ── Apply persona provider/model/thinkingLevel on session start (also runs on /reload) ──
     try {

@@ -5,11 +5,14 @@
  * on the same machine enqueue speech into a single FIFO. One poller drains
  * the queue, ensuring messages are spoken in order with no overlap or duplicates.
  *
- * Activated only when ELEVENLABS_API_KEY is set.
+ * Audio enablement can come from three places:
+ *   1. `persona.yaml` with `voiceId: "none"`   → hard disable
+ *   2. `--team-audio on|off` / `/team-audio`    → session override
+ *   3. `ELEVENLABS_API_KEY` presence            → default fallback
  */
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type Database from "better-sqlite3";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -47,6 +50,11 @@ interface VoiceQueueRow {
 
 interface VoiceQueueColumnInfo {
   name: string;
+}
+
+interface VoiceConfig {
+  voiceId: string | null;
+  personaDisabled: boolean;
 }
 
 function initVoiceQueue(db: Database.Database): void {
@@ -209,11 +217,10 @@ export function isEnabled(): boolean {
 }
 
 /**
- * Set up TTS: register /tts-test command, listen for teammate_message events,
- * and start the voice queue poller when a team channel is active.
+ * Set up TTS: register /tts-test + /team-audio commands, listen for
+ * teammate_message events, and start the voice queue poller when audio is on.
  *
  * Call this once from the main extension entry point.
- * No-op if ELEVENLABS_API_KEY is not set.
  */
 export function setupTts(
   pi: ExtensionAPI,
@@ -229,18 +236,83 @@ export function setupTts(
   const clearIntervalImpl = deps?.clearIntervalImpl ?? clearInterval;
 
   let selfVoiceId: string | null = null;
+  let personaAudioDisabled = false;
+  let sessionAudioOverride: boolean | null = null;
+  let sessionCtx: ExtensionContext | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let draining = false;
-  let voiceQueueReady = false;
-  let activeChannel: string | null = null;
+  let voiceQueueDb: Database.Database | null = null;
+  let warnedMissingApiKey = false;
+
+  function hasApiKey(): boolean {
+    return !!process.env.ELEVENLABS_API_KEY;
+  }
+
+  function parseAudioSetting(value: unknown): boolean | null {
+    if (typeof value !== "string") return null;
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "on") return true;
+    if (normalized === "off") return false;
+    return null;
+  }
+
+  function isAudioEnabled(): boolean {
+    if (personaAudioDisabled) return false;
+    if (sessionAudioOverride !== null) return sessionAudioOverride;
+    return hasApiKey();
+  }
+
+  function updateStatus(ctx: ExtensionContext | null = sessionCtx): void {
+    if (!ctx) return;
+    ctx.ui.setStatus("tts", isAudioEnabled() ? "audio: on" : "audio: off");
+  }
+
+  function stopPoller(): void {
+    if (pollTimer) {
+      clearIntervalImpl(pollTimer);
+      pollTimer = null;
+    }
+    voiceQueueDb = null;
+  }
+
+  function startPoller(): void {
+    if (pollTimer || !isAudioEnabled()) return;
+    pollTimer = setIntervalImpl(() => drain(), POLL_INTERVAL_MS) as ReturnType<typeof setInterval>;
+  }
+
+  function maybeWarnMissingApiKey(ctx: ExtensionContext | null = sessionCtx): void {
+    if (!ctx) return;
+    if (!isAudioEnabled() || hasApiKey()) {
+      warnedMissingApiKey = false;
+      return;
+    }
+    if (warnedMissingApiKey) return;
+    warnedMissingApiKey = true;
+    ctx.ui.notify(
+      'Audio is enabled, but ELEVENLABS_API_KEY is not set. Playback will fail until the key is available.',
+      'warning',
+    );
+  }
+
+  function syncAudioState(ctx: ExtensionContext | null = sessionCtx): void {
+    updateStatus(ctx);
+    if (isAudioEnabled()) {
+      startPoller();
+      maybeWarnMissingApiKey(ctx);
+    } else {
+      stopPoller();
+      warnedMissingApiKey = false;
+    }
+  }
 
   function ensureVoiceQueue(): Database.Database | null {
+    if (!isAudioEnabled()) return null;
     const db = getDb();
     if (!db) return null;
-    if (!voiceQueueReady) {
+    if (db !== voiceQueueDb) {
       try {
         initVoiceQueue(db);
-        voiceQueueReady = true;
+        voiceQueueDb = db;
       } catch {
         return null;
       }
@@ -249,6 +321,7 @@ export function setupTts(
   }
 
   function enqueue(text: string, voiceId: string | null): boolean {
+    if (!isAudioEnabled()) return false;
     const db = ensureVoiceQueue();
     if (!db) return false;
     try {
@@ -262,13 +335,13 @@ export function setupTts(
   }
 
   async function drain(): Promise<void> {
-    if (draining) return;
+    if (draining || !isAudioEnabled()) return;
     const db = ensureVoiceQueue();
     if (!db) return;
 
     draining = true;
     try {
-      while (true) {
+      while (isAudioEnabled()) {
         let claimed: VoiceQueueRow | null = null;
         try {
           claimed = claimNext(db);
@@ -288,6 +361,17 @@ export function setupTts(
     }
   }
 
+  function refreshVoiceConfig(dir: string): void {
+    const cfg = loadVoiceConfig(dir);
+    selfVoiceId = cfg.voiceId;
+    personaAudioDisabled = cfg.personaDisabled;
+  }
+
+  function setAudioOverride(next: boolean | null, ctx: ExtensionContext): void {
+    sessionAudioOverride = next;
+    syncAudioState(ctx);
+  }
+
   // ── /tts-test command ───────────────────────────────────────
   pi.registerCommand("tts-test", {
     description: "Speak text using this agent's voiceId. Usage: /tts-test <text>",
@@ -297,9 +381,20 @@ export function setupTts(
         ctx.ui.notify("Usage: /tts-test <text>", "error");
         return;
       }
-      if (selfVoiceId === null) {
-        selfVoiceId = loadVoiceId(ctx.cwd);
+
+      refreshVoiceConfig(ctx.cwd);
+      sessionCtx = ctx;
+      syncAudioState(ctx);
+
+      if (personaAudioDisabled) {
+        ctx.ui.notify('Audio is disabled by persona.yaml (voiceId: "none").', "info");
+        return;
       }
+      if (!isAudioEnabled()) {
+        ctx.ui.notify('Audio is off. Use /team-audio on to enable it.', "info");
+        return;
+      }
+
       ctx.ui.notify(`Speaking: "${text}" (voice: ${selfVoiceId ?? DEFAULT_VOICE_ID})`, "info");
       if (!enqueue(text, selfVoiceId)) {
         await speakImpl(text, selfVoiceId);
@@ -307,8 +402,40 @@ export function setupTts(
     },
   });
 
+  // ── /team-audio command ─────────────────────────────────────
+  pi.registerCommand("team-audio", {
+    description: "Control teammate audio. Usage: /team-audio [on|off]",
+    handler: (args, ctx) => {
+      sessionCtx = ctx;
+      refreshVoiceConfig(ctx.cwd);
+
+      const raw = args.trim().toLowerCase();
+      if (raw && raw !== "on" && raw !== "off") {
+        ctx.ui.notify("Usage: /team-audio [on|off]", "error");
+        return;
+      }
+
+      const next = raw === ""
+        ? !isAudioEnabled()
+        : raw === "on";
+
+      setAudioOverride(next, ctx);
+
+      if (personaAudioDisabled) {
+        ctx.ui.notify(
+          `Audio override set to ${next ? "on" : "off"}, but persona.yaml keeps audio off because voiceId is "none".`,
+          "info",
+        );
+        return;
+      }
+
+      ctx.ui.notify(`Audio ${isAudioEnabled() ? "on" : "off"}.`, "info");
+    },
+  });
+
   // ── Listen for teammate messages ────────────────────────────
   pi.events.on("teammate_message", (data: any) => {
+    if (!isAudioEnabled()) return;
     const { event, content, direction } = data;
     if (!content || typeof content !== "string") return;
     if (!SPOKEN_EVENTS.has(event)) return;
@@ -317,36 +444,45 @@ export function setupTts(
   });
 
   return {
-    onSessionStart(ctx: ExtensionContext, channel: string | null) {
-      selfVoiceId = loadVoiceId(ctx.cwd);
-      activeChannel = channel;
+    onSessionStart(ctx: ExtensionContext, _channel: string | null) {
+      sessionCtx = ctx;
+      refreshVoiceConfig(ctx.cwd);
 
-      ctx.ui.setStatus("tts", "audio: on");
+      const flagValue = pi.getFlag("team-audio");
+      const parsedFlag = parseAudioSetting(flagValue);
+      sessionAudioOverride = parsedFlag;
 
-      // Start the poll timer once per session. This lets /tts-test work
-      // even before a team DB exists, and also covers the later /team-join
-      // path because getDb() will begin returning the active DB once joined.
-      if (!pollTimer) {
-        pollTimer = setIntervalImpl(() => drain(), POLL_INTERVAL_MS) as ReturnType<typeof setInterval>;
+      if (flagValue != null && parsedFlag === null) {
+        ctx.ui.notify('Invalid --team-audio value. Use "on" or "off".', "warning");
       }
+
+      syncAudioState(ctx);
     },
 
     onShutdown() {
-      if (pollTimer) {
-        clearIntervalImpl(pollTimer);
-        pollTimer = null;
-      }
+      stopPoller();
+      sessionCtx = null;
     },
   };
 }
 
 // ── Helper ──────────────────────────────────────────────────────
 
-function loadVoiceId(dir: string): string | null {
+function loadVoiceConfig(dir: string): VoiceConfig {
   try {
     const persona = loadPersona(dir);
-    return (persona as any)?.voiceId ?? null;
+    const rawVoiceId = (persona as any)?.voiceId;
+    if (typeof rawVoiceId === "string") {
+      const trimmed = rawVoiceId.trim();
+      if (trimmed.toLowerCase() === "none") {
+        return { voiceId: null, personaDisabled: true };
+      }
+      if (trimmed !== "") {
+        return { voiceId: trimmed, personaDisabled: false };
+      }
+    }
+    return { voiceId: null, personaDisabled: false };
   } catch {
-    return null;
+    return { voiceId: null, personaDisabled: false };
   }
 }

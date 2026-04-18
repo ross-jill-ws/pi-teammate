@@ -37,14 +37,25 @@ Delete the existing channel database and start clean. Use with `--team-channel`.
 pi --team-channel forex-rt --agent-name designer --team-new
 ```
 
+### `--team-audio <on|off>`
+
+Force teammate audio on or off for the current session. This overrides the default env-based behavior from `ELEVENLABS_API_KEY`.
+
+```bash
+pi --team-audio on
+pi --team-audio off
+```
+
+If the current agent's `persona.yaml` has `voiceId: "none"`, that hard-disables audio regardless of this flag.
+
 ### Combined Example
 
 ```bash
 # First agent: create the team
-pi --team-channel my-project --agent-name designer --team-new
+pi --team-channel my-project --agent-name designer --team-new --team-audio on
 
-# Second agent: join the existing team
-pi --team-channel my-project --agent-name developer
+# Second agent: join the existing team with audio disabled
+pi --team-channel my-project --agent-name developer --team-audio off
 
 # Third agent: join later
 pi --team-channel my-project --agent-name tester
@@ -93,6 +104,18 @@ Remove stale inactive sessions whose agent name matches your current agent name.
 ```
 /team-remove-inactive
 ```
+
+#### `/team-audio [on|off]`
+
+Control teammate audio for the current session. With no argument, toggles the current state.
+
+```
+/team-audio
+/team-audio on
+/team-audio off
+```
+
+If the current agent's `persona.yaml` has `voiceId: "none"`, audio remains off even if this command is set to `on`.
 
 #### `/team-status`
 

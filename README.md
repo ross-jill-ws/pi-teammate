@@ -159,7 +159,7 @@ Each agent's working directory should contain a `persona.yaml` that defines its 
 | `thinkingLevel` | no | Reasoning effort: `off`, `low`, `medium`, `high` (default: inherited from pi settings) |
 | `systemPrompt` | no | Private instructions that shape the agent's behavior |
 | `contentWordLimit` | no | Max word count for message content |
-| `voiceId` | no | ElevenLabs voice ID for TTS |
+| `voiceId` | no | ElevenLabs voice ID for TTS, or `"none"` to hard-disable audio for this agent |
 
 ### Example: Designer
 
@@ -224,7 +224,24 @@ Set the `ELEVENLABS_API_KEY` environment variable:
 export ELEVENLABS_API_KEY=sk-...
 ```
 
-That's it. When the key is present, TTS activates automatically and the footer shows `audio: on`. When it's absent, TTS is completely disabled with zero overhead.
+By default, when the key is present, TTS activates automatically and the footer shows `audio: on`.
+
+You can override that default at startup with:
+
+```bash
+pi --team-audio on
+pi --team-audio off
+```
+
+And you can change it live from inside the session with:
+
+```
+/team-audio        # toggle
+/team-audio on
+/team-audio off
+```
+
+`--team-audio` overrides the env-based default for the current session.
 
 ### Per-Agent Voice
 
@@ -237,6 +254,14 @@ description: "UI/UX designer"
 ```
 
 If `voiceId` is omitted, the default voice Rachel (`21m00Tcm4TlvDq8ikWAM`) is used. You can browse available voices at [elevenlabs.io/voices](https://elevenlabs.io/voices).
+
+To hard-disable audio for a specific agent, set:
+
+```yaml
+voiceId: "none"
+```
+
+When `voiceId: "none"` is present, that agent does not enqueue speech, does not call ElevenLabs, and stays audio-off even if `ELEVENLABS_API_KEY` or `--team-audio on` is set.
 
 ### How It Works
 
