@@ -26,12 +26,24 @@ set -euo pipefail
 #   1 -> 1x1        2 -> 1x2        3 -> 1x2 + 1x1
 #   4 -> 2x2        5 -> 1x3 + 1x2  6 -> 3x2
 #
+# Claude Code teammates
+# ---------------------
+# A teammate whose persona.yaml says provider: "anthropic" (or whose folder
+# holds a .mcp.json starting teammate-mcp) runs under Claude Code, not pi.
+# Its pane does NOT auto-start anything: it prints the `claude` launch
+# command and how to join the channel inside the Claude Code TUI, then
+# leaves you at a shell to run it. pi teammates in the same roster still
+# auto-start as usual.
+#
 # Channel creation
 # ----------------
-# The first teammate creates the channel with --team-new; the rest wait for
-# ~/.pi/pi-teammate/<channel>/team.db to appear before joining. --team-new
-# deletes the whole channel directory, so the wait is what stops a joiner from
-# registering into a database that is about to be wiped.
+# The first *pi* teammate creates the channel with --team-new; the other pi
+# panes wait for ~/.pi/pi-teammate/<channel>/team.db to appear before
+# joining. --team-new deletes the whole channel directory, so the wait is
+# what stops a joiner from registering into a database that is about to be
+# wiped. Claude Code teammates never create the channel from this script —
+# start them after it exists (their auto-join recreates it only when the
+# roster has no pi teammate at all).
 #
 # Usage:
 #   ./launch-team.sh [key=value ...] [teammate-dir ...]
@@ -40,8 +52,8 @@ set -euo pipefail
 #   fresh=0          join the existing channel instead of recreating it
 #   dry-run=1        print the layout and the per-pane commands, run nothing
 #
-#   Positional arguments override discovery and set the order — the first one
-#   creates the channel and takes slot 1.
+#   Positional arguments override discovery and set the order — the first
+#   pi teammate creates the channel; the first argument takes slot 1.
 #
 # Examples:
 #   ./launch-team.sh
@@ -54,6 +66,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAX_PANES=6
 PI_CMD="${PI_CMD:-pi}"          # overridable so the launcher can be tested
+CLAUDE_CMD="${CLAUDE_CMD:-claude --dangerously-skip-permissions --dangerously-load-development-channels server:mcp-teammate}"
 
 CHANNEL=""
 FRESH=1
@@ -66,7 +79,7 @@ for arg in "$@"; do
     fresh=*)   FRESH="${arg#*=}" ;;
     dry-run=*) DRY_RUN="${arg#*=}" ;;
     -h|--help|help)
-      sed -n '4,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '4,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     -*)
       echo "Unknown option: $arg" >&2
@@ -122,6 +135,22 @@ name_of() {
   printf '%s' "${n:-$1}"
 }
 
+# A Claude Code teammate: provider "anthropic" in persona.yaml, or a
+# .mcp.json in the folder that starts teammate-mcp. Its pane only prints
+# launch instructions — `pi` must never run there.
+is_claude() {
+  local dir="${1%/}"
+  grep -q 'teammate-mcp' "${dir}/.mcp.json" 2>/dev/null && return 0
+  grep -m1 '^provider:' "${dir}/persona.yaml" 2>/dev/null | grep -q 'anthropic'
+}
+
+# The channel creator is the first pi teammate — a Claude Code pane cannot
+# run --team-new. 0 means the roster is Claude Code only.
+CREATOR_SLOT=0
+for _i in $(seq 1 "$N"); do
+  if ! is_claude "${TEAMMATES[$((_i-1))]}"; then CREATOR_SLOT=$_i; break; fi
+done
+
 DB_PATH="${HOME}/.pi/pi-teammate/${CHANNEL}/team.db"
 
 # --- Pane layouts ----------------------------------------------------------
@@ -149,17 +178,43 @@ layout_name() {
   esac
 }
 
-# The command one pane runs. Slot 1 creates the channel; the others wait for
-# its database before joining, so --team-new never wipes a live registration.
+# What a Claude Code pane shows instead of running anything: the launch
+# command, and how the channel gets joined inside the Claude Code TUI.
+claude_usage_lines() {
+  local dir="${1%/}"
+  printf '%s\n' \
+    "Claude Code teammate: $(name_of "$dir") -- not auto-started." \
+    "Once the '${CHANNEL}' channel is up (pi panes running), launch it with:" \
+    "" \
+    "  ${CLAUDE_CMD}" \
+    "" \
+    ".mcp.json auto-joins '${CHANNEL}' on startup; to join by hand inside" \
+    "Claude Code, run: /mcp__mcp-teammate__team-join ${CHANNEL}"
+}
+
+# The command one pane runs. The creator slot (first pi teammate) creates the
+# channel; other pi panes wait for its database before joining, so --team-new
+# never wipes a live registration. Claude Code panes only print instructions.
 pane_cmd() {
   local i="$1" dir="${TEAMMATES[$(($1-1))]}"
+
+  if is_claude "$dir"; then
+    local cmd line
+    cmd="cd $(printf %q "${SCRIPT_DIR}/${dir%/}")"
+    while IFS= read -r line; do
+      cmd+=" && echo $(printf %q "$line")"
+    done <<< "$(claude_usage_lines "$dir")"
+    printf '%s' "$cmd"
+    return
+  fi
+
   local launch="${PI_CMD} --team-channel $(printf %q "$CHANNEL")"
 
-  if (( i == 1 )) && [[ "$FRESH" == "1" ]]; then
+  if (( i == CREATOR_SLOT )) && [[ "$FRESH" == "1" ]]; then
     launch+=" --team-new"
   fi
 
-  if (( i == 1 )); then
+  if (( i == CREATOR_SLOT )); then
     printf 'cd %s && %s' "$(printf %q "${SCRIPT_DIR}/${dir%/}")" "$launch"
   else
     printf 'cd %s && for _ in $(seq 1 300); do [ -f %s ] && break; sleep 0.2; done; %s' \
@@ -260,9 +315,19 @@ run_in_iterm() {
 echo "channel:   ${CHANNEL}"
 echo "teammates: ${N} — layout $(layout_name "$N")"
 for i in $(seq 1 "$N"); do
+  MARKER=""
+  if is_claude "${TEAMMATES[$((i-1))]}"; then
+    MARKER="   (claude code — pane prints the launch command)"
+  elif (( i == CREATOR_SLOT )) && [[ "$FRESH" == "1" ]]; then
+    MARKER="   (creates the channel)"
+  fi
   printf '  slot %s  %-14s %s%s\n' "$i" "$(name_of "${TEAMMATES[$((i-1))]}")" \
-    "${TEAMMATES[$((i-1))]%/}" "$( (( i == 1 )) && [[ "$FRESH" == "1" ]] && printf '   (creates the channel)'; true )"
+    "${TEAMMATES[$((i-1))]%/}" "$MARKER"
 done
+if (( CREATOR_SLOT == 0 )) && [[ "$FRESH" == "1" ]]; then
+  echo "note: no pi teammate in this roster — the first Claude Code session to"
+  echo "      join will create the '${CHANNEL}' channel."
+fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo
@@ -289,6 +354,11 @@ fi
 
 if (( N == 1 )); then
   cd "${SCRIPT_DIR}/${TEAMMATES[0]%/}"
+  if is_claude "${TEAMMATES[0]}"; then
+    echo
+    claude_usage_lines "${TEAMMATES[0]}"
+    exit 0
+  fi
   exec ${PI_CMD} --team-channel "$CHANNEL" $( [[ "$FRESH" == "1" ]] && printf -- '--team-new' )
 fi
 
@@ -308,4 +378,9 @@ fi
 
 # Slot 1 runs here, in the pane the script was started from.
 cd "${SCRIPT_DIR}/${TEAMMATES[0]%/}"
-exec ${PI_CMD} --team-channel "$CHANNEL" $( [[ "$FRESH" == "1" ]] && printf -- '--team-new' )
+if is_claude "${TEAMMATES[0]}"; then
+  echo
+  claude_usage_lines "${TEAMMATES[0]}"
+  exit 0
+fi
+exec ${PI_CMD} --team-channel "$CHANNEL" $( [[ "$FRESH" == "1" && "$CREATOR_SLOT" == "1" ]] && printf -- '--team-new' )

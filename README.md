@@ -2,6 +2,8 @@
 
 A `pi` extension that turns multiple `pi` sessions into a collaborative team of AI agents. Instead of a top-down orchestrator dispatching tasks to subordinate subagents, `pi-teammate` creates a **peer network** where every agent is equal, can communicate with any other agent, and retains context across tasks.
 
+From version 0.5.0, `pi-teammate` also supports **Claude Code sessions** as teammates — your team can consist of both `pi` and `Claude Code` agents on the same channel, each a full peer with the same roster, tasks, and messaging. See [Claude Code Teammates](#claude-code-teammates) below.
+
 For the full motivation behind why a teammate system beats traditional subagent architectures, see [Why Build a Teammate System?](documents/00-why-build-teammate.md).
 
 ## Documentation
@@ -12,6 +14,8 @@ For the full motivation behind why a teammate system beats traditional subagent 
 | [Designing a Teammate-Based Multi-Agent System](documents/01-teammate-design.md) | Design principles, architecture, and a full walkthrough example |
 | [Communication & Messaging](documents/02-teammate-communication.md) | SQLite message bus, payload schema, event types, MAMORU internals |
 | [Command Reference](documents/03-command-reference.md) | Complete manual for CLI flags, slash commands, and TUI shortcuts |
+| [Claude Code as a Teammate](documents/04-claude-code-teammate.md) | Run a Claude Code session as a full peer on the channel — architecture and message flow |
+| [Claude Code Teammate — Setup & Launch](documents/05-claude-code-teammate-setup.md) | The artifacts, launching mixed pi/Claude Code teams, troubleshooting |
 
 ## Install / Uninstall
 
@@ -81,6 +85,17 @@ Each teammate is a regular `pi` session with the `pi-teammate` extension install
 The core principle is **decentralization**. Communication is **N-to-N** — any agent can send a task to any other agent, ask for clarification mid-task, or broadcast to the whole team. Agents can sub-delegate (e.g. a developer asking a tester to review code it received from a designer). Teammates can join or leave at any time — a broadcast notifies everyone, and the roster updates instantly. There is no fixed team definition; the team is whoever is on the channel right now.
 
 For the full design rationale, see [Designing a Teammate-Based Multi-Agent System](documents/01-teammate-design.md).
+
+## Claude Code Teammates
+
+A teammate does not have to be a `pi` session. Set `provider: "anthropic"` in a persona and that teammate runs as a **Claude Code session** — joining the same channel, appearing on the same roster, and exchanging the same task messages as every pi agent, while bringing the whole Claude Code ecosystem (skills, MCP servers, subagents, Anthropic's strongest models) into the team. A small stdio MCP server (`mcp-teammate`) runs MAMORU inside the session and exposes the pi-teammate commands under `/mcp__mcp-teammate__*`:
+
+```bash
+cd project/developer   # persona.yaml with provider: "anthropic", plus a .mcp.json
+claude --dangerously-skip-permissions --dangerously-load-development-channels server:mcp-teammate
+```
+
+Mixed rosters just work: `launch-team.sh` auto-starts the pi teammates and gives each Claude Code teammate a pane that prints its launch command. See [Claude Code as a Teammate](documents/04-claude-code-teammate.md) for the architecture and [Setup & Launch](documents/05-claude-code-teammate-setup.md) for the artifacts, launcher behavior, and troubleshooting.
 
 ## Step-by-Step Guide
 

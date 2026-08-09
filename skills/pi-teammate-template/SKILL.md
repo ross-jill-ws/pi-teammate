@@ -1,6 +1,6 @@
 ---
 name: pi-teammate-template
-description: Scaffold and maintain pi-teammate folders, each holding a persona.yaml. Use when the user wants to initialize a team of teammates/agents in the current repo, add a teammate to an existing team, or change an existing teammate's persona, role, model, or voice.
+description: Scaffold and maintain pi-teammate folders, each holding a persona.yaml. Use when the user wants to initialize a team of teammates/agents in the current repo, add a teammate to an existing team, change an existing teammate's persona, role, model, or voice, or run a teammate under Claude Code instead of pi.
 ---
 
 # Build and maintain a teammate roster
@@ -17,6 +17,16 @@ find . -maxdepth 3 -name persona.yaml -not -path "*/node_modules/*" -not -path "
 ```
 
 Those three keys are single-line scalars, so grep is enough to place every teammate. `description` and `systemPrompt` are block scalars — read any file you are about to change in full instead of grepping it.
+
+Each teammate also has a **runtime**: `pi` (the default) or **Claude Code**. **Any teammate on the `anthropic` provider runs under Claude Code — this is not optional.** The user asking for "anthropic", "opus", "claude", or "a Claude Code session" for a teammate all select the Claude Code runtime; pi teammates keep the other providers. Never write `provider: "anthropic"` into a persona without also producing the Claude Code artifacts from STEP 2 — an anthropic persona with no `.mcp.json` is a scaffolding bug, not a valid pi teammate.
+
+In an existing roster, a folder holding a `.mcp.json` that starts `teammate-mcp.ts` is a Claude Code teammate — check with:
+
+```bash
+grep -l "teammate-mcp" */.mcp.json 2>/dev/null
+```
+
+Create, add, and update mode all apply — switching an existing teammate's runtime (either direction) is an update. See *Claude Code teammates* in STEP 2 for what changes.
 
 That output settles the mode:
 
@@ -64,7 +74,7 @@ Only these keys are read (`extensions/persona.ts`, `mamoru.ts`, `tts.ts`). Do no
 |---|---|---|
 | `name` | required | Display name, broadcast to the team; also becomes the agent name, so `--agent-name` is never needed |
 | `description` | required | Broadcast; teammates read it to decide who to delegate to. Empty value throws on load |
-| `provider` | `openai-codex` | Applied only together with `model` |
+| `provider` | `openai-codex` | Applied only together with `model`. `"anthropic"` selects the Claude Code runtime — see *Claude Code teammates* below, which adds required artifacts and forbids `thinkingLevel` |
 | `model` | `gpt-5.6-sol` | Never set one of provider/model without the other |
 | `thinkingLevel` | `high` | `off`, `low`, `medium`, `high` only — pi's own `minimal`/`xhigh`/`max` are rejected and throw |
 | `systemPrompt` | — | Private instructions. When present it **replaces** `description` in this agent's system prompt |
@@ -117,6 +127,64 @@ Omit any key you have no value for — an empty string breaks `description` and 
 
 **Done when:** every in-scope `persona.yaml` has a `systemPrompt` naming at least one hand-off to a teammate that exists, and a `voiceId` that is `"none"` or an id unique across the roster; and in update mode, every key you were not asked to change still holds the value it had before.
 
+### Claude Code teammates
+
+A teammate can run under Claude Code instead of pi. The roster contract does not change — the folder still holds a `persona.yaml`, the agent joins the same channel DB, and pi teammates see it like any other agent. Three artifacts differ, all inside that teammate's folder. Resolve `<skill-dir>` to the absolute path of the directory this SKILL.md lives in (the `scripts/` folder sits next to it), the same way STEP 3 locates `launch-team.sh`.
+
+**1. persona.yaml.** `provider` must be `"anthropic"`; `model` defaults to `"opus"`. Do **not** write `thinkingLevel` or other pi runtime keys — Claude Code manages its own reasoning settings. Everything else (name/description/systemPrompt shape, boundary rules, *Assigning voices*) applies unchanged:
+
+```yaml
+name: "Drew"
+provider: "anthropic"
+model: "opus"
+voiceId: "none"          # same rules as pi teammates — see Assigning voices
+description: >
+  Fullstack developer specialized in TypeScript and React.
+systemPrompt: >
+  You are a senior fullstack developer. ...
+```
+
+**2. `.mcp.json`** — starts the stdio channel MCP when a Claude Code session opens in the folder. The script path must be absolute; the server resolves its own dependencies from the pi-teammate package, so it starts from any folder:
+
+```json
+{
+  "mcpServers": {
+    "mcp-teammate": {
+      "command": "bun",
+      "args": ["<skill-dir>/scripts/teammate-mcp.ts"],
+      "env": { "MCP_TEAMMATE_AUTOJOIN_CHANNEL": "<channel>" }
+    }
+  }
+}
+```
+
+`MCP_TEAMMATE_AUTOJOIN_CHANNEL` joins the channel automatically on session start, reading `persona.yaml` from the folder for the agent name and description. Drop the `env` block only if the user wants to join manually with `/mcp__mcp-teammate__team-join <channel>`.
+
+**3. Voice hooks — only when `ELEVENLABS_API_KEY` is set** and the teammate's `voiceId` is not `"none"`. Write `<folder>/.claude/settings.json` with start/stop hooks that speak through the teammate's voice (`scripts/tts-say.ts` reads `voiceId` from the folder's persona.yaml and exits silently on any failure). When the key is unset, skip this file entirely:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "startup", "hooks": [{ "type": "command", "command": "bun <skill-dir>/scripts/tts-say.ts '<Name> is online'" }] }
+    ],
+    "Stop": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "bun <skill-dir>/scripts/tts-say.ts '<Name> has finished'" }] }
+    ]
+  }
+}
+```
+
+**Launching.** `launch-team.sh` auto-starts pi sessions only. For a Claude Code teammate it still opens a pane in that folder, but instead of running anything it prints this command plus the channel-join instructions and leaves the shell — the user runs it once the channel exists (a pi teammate created it, or `/team-create` ran); starting earlier risks the launcher's `--team-new` wiping the registration:
+
+```bash
+cd <folder> && claude --dangerously-skip-permissions --dangerously-load-development-channels server:mcp-teammate
+```
+
+`--dangerously-load-development-channels` is required for inbound channel notifications while channels are in research preview; accept the "local development" dialog at startup. If the banner instead says "Channels are not currently available", feature-flag resolution is disabled in the environment (typically `DISABLE_GROWTHBOOK=1` exported in the shell) — launch with `env -u DISABLE_GROWTHBOOK claude ...`.
+
+**Done when:** the folder has all three artifacts (or two, when voice is skipped), the `.mcp.json` script path is absolute and exists, and `persona.yaml` carries `provider: "anthropic"` + a model with no `thinkingLevel`.
+
 ## STEP 3 — Drop in the launcher
 
 `launch-team.sh` sits next to this SKILL.md. Copy it into the parent folder — the directory holding the teammate folders — and make it executable:
@@ -126,9 +194,11 @@ cp <the directory this SKILL.md lives in>/launch-team.sh <parent>/launch-team.sh
 chmod +x <parent>/launch-team.sh
 ```
 
-It needs no editing. It finds every directory under it holding a `persona.yaml`, defaults the channel to the parent folder's name, splits the terminal into one pane per teammate (iTerm2 when you are in iTerm2, tmux otherwise), and starts a `pi` session in each. Slot 1 creates the channel with `--team-new`; the others wait for `~/.pi/pi-teammate/<channel>/team.db` before joining, because `--team-new` deletes the whole channel directory and would otherwise wipe a joiner that got there first.
+It needs no editing. It finds every directory under it holding a `persona.yaml`, defaults the channel to the parent folder's name, splits the terminal into one pane per teammate (iTerm2 when you are in iTerm2, tmux otherwise), and auto-starts a `pi` session in each pi pane. The first **pi** teammate creates the channel with `--team-new`; the other pi panes wait for `~/.pi/pi-teammate/<channel>/team.db` before joining, because `--team-new` deletes the whole channel directory and would otherwise wipe a joiner that got there first.
 
 In **add** mode the file is probably already there — leave it alone, it will pick the new teammate up on its own.
+
+**Mixed teams:** the launcher tells the runtimes apart on its own (`provider: "anthropic"` in the persona, or a `.mcp.json` starting `teammate-mcp` — same signals as STEP 1), so a mixed roster needs no argument filtering. A Claude Code teammate's pane never runs `pi`: it prints the `claude` launch command and the channel-join instructions from *Launching* in STEP 2, then leaves the user at a shell in that folder, while every pi teammate in the roster still auto-starts. Positional args remain available to launch a subset or fix the order.
 
 Pane layouts are defined for 1–6 teammates (`1x2`, `2x2`, `1x3 + 1x2`, `3x2`, …). A larger roster exits with a message rather than guessing a layout; launch the overflow from a second window.
 
@@ -176,4 +246,4 @@ A teammate whose `persona.yaml` you edited while its session was running needs t
 
 If `pi list` does not show `pi-teammate`, `pi install npm:pi-teammate` has to come first.
 
-Also report any skills linked per teammate, plus anything requested that was not found. When voices were auto-assigned, name the voice each teammate got so the user can swap any that don't suit. The persona files are on disk — summarize them, don't print them back.
+Also report any skills linked per teammate, plus anything requested that was not found. When voices were auto-assigned, name the voice each teammate got so the user can swap any that don't suit. For each Claude Code teammate, print its launch command (`cd <folder> && claude --dangerously-skip-permissions --dangerously-load-development-channels server:mcp-teammate`), note that its launcher pane echoes the same command instead of auto-starting, and say whether voice hooks were written. The persona files are on disk — summarize them, don't print them back.
