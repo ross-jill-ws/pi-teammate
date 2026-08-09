@@ -1,7 +1,7 @@
 /**
  * Slash commands for pi-teammate.
  */
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MamoruOverlay } from "./tui/mamoru-overlay.ts";
 import { RosterDetailOverlay, TaskDetailOverlay } from "./tui/detail-overlay.ts";
 import type Database from "better-sqlite3";
@@ -651,7 +651,7 @@ export function registerCommands(
   let activeRosterOverlay: RosterDetailOverlay | null = null;
   let activeTaskOverlay: TaskDetailOverlay | null = null;
 
-  function toggleMamoruOverlay(ctx: any) {
+  function toggleMamoruOverlay(ctx: ExtensionContext) {
     const mamoru = getMamoru();
     if (!mamoru) {
       ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
@@ -700,7 +700,7 @@ export function registerCommands(
     });
   }
 
-  function toggleRosterOverlay(ctx: any) {
+  function toggleRosterOverlay(ctx: ExtensionContext) {
     const mamoru = getMamoru();
     if (!mamoru) {
       ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");
@@ -746,7 +746,7 @@ export function registerCommands(
     });
   }
 
-  function toggleTaskOverlay(ctx: any) {
+  function toggleTaskOverlay(ctx: ExtensionContext) {
     const mamoru = getMamoru();
     if (!mamoru) {
       ctx.ui.notify("Not connected to any team channel. Use /team-join first.", "error");

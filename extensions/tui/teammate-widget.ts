@@ -5,7 +5,7 @@
  */
 import type { Mamoru } from "../mamoru.ts";
 import { renderCard, type CardTheme } from "./tui-draw.ts";
-import { visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
+import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 
 const CARD_THEMES: CardTheme[] = [
   { bg: "\x1b[48;2;15;55;30m", br: "\x1b[38;2;50;185;100m" }, // green for roster

@@ -8,8 +8,8 @@
  *
  * Timeout after 1.5 seconds cancels prefix mode.
  */
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { matchesKey, Key } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { matchesKey, Key } from "@earendil-works/pi-tui";
 
 const PREFIX_KEY = Key.ctrl("t");
 const PREFIX_TIMEOUT_MS = 1500;

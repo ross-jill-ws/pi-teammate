@@ -7,8 +7,8 @@
  * Both implement Focusable, support vertical scrolling (↑/↓/j/k/PgUp/PgDn),
  * and close on Escape/Enter. They use tui.terminal.rows for pane-aware sizing.
  */
-import type { Focusable } from "@mariozechner/pi-tui";
-import { matchesKey, visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
+import type { Focusable } from "@earendil-works/pi-tui";
+import { matchesKey, visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 import type { RosterEntry, OutboundTask, ActiveTask } from "../types.ts";
 import { formatElapsed } from "./teammate-widget.ts";
 
@@ -49,10 +49,10 @@ function handleScroll(
   if (matchesKey(data, "down") || matchesKey(data, "j")) {
     return { offset: Math.min(maxScroll, scrollOffset + 1), handled: true };
   }
-  if (matchesKey(data, "pageup")) {
+  if (matchesKey(data, "pageUp")) {
     return { offset: Math.max(0, scrollOffset - 10), handled: true };
   }
-  if (matchesKey(data, "pagedown")) {
+  if (matchesKey(data, "pageDown")) {
     return { offset: Math.min(maxScroll, scrollOffset + 10), handled: true };
   }
   if (matchesKey(data, "home") || data === "g") {

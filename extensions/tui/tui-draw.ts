@@ -2,7 +2,7 @@
  * tui-draw — Reusable TUI drawing primitives for pi extensions.
  */
 
-import { visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
+import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 
 const FG_RESET = "\x1b[39m";
 const BG_RESET = "\x1b[49m";

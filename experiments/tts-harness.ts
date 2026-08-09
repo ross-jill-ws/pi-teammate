@@ -18,7 +18,7 @@
  * Commands:
  *   /tts-test <text>  — speak the given text using this agent's voiceId
  */
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import Database from "better-sqlite3";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

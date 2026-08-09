@@ -7,7 +7,7 @@
  * replies with task_done, this handler waits 2 seconds then sends another
  * task_req to keep the conversation going. The loop continues indefinitely.
  */
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   let chatPartner: string | null = null; // session_id of the agent we're chatting with

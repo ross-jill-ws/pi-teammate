@@ -1,6 +1,6 @@
-import { Type, type Static } from "@sinclair/typebox";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { AgentToolResult, AgentToolUpdateCallback } from "@mariozechner/pi-coding-agent";
+import { Type, type Static } from "typebox";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
 import type Database from "better-sqlite3";
 import { sendMessage, sendTaskReq } from "../db.ts";
 import { createPayload, MESSAGE_EVENTS, TASK_ID_REQUIRED_EVENTS, MAX_CONTENT_WORDS, countWords } from "../types.ts";
@@ -19,6 +19,15 @@ export const SendMessageParams = Type.Object({
 });
 
 export type SendMessageInput = Static<typeof SendMessageParams>;
+
+export interface SendMessageDetails {
+  messageId: number;
+  taskId?: number;
+  event: string;
+  to: string | null;
+  agentName?: string;
+  blocking?: boolean;
+}
 
 export function createSendMessageTool(opts: {
   getMamoru: () => Mamoru | null;
@@ -39,9 +48,9 @@ export function createSendMessageTool(opts: {
       toolCallId: string,
       params: SendMessageInput,
       signal: AbortSignal | undefined,
-      onUpdate: AgentToolUpdateCallback | undefined,
+      onUpdate: AgentToolUpdateCallback<SendMessageDetails> | undefined,
       ctx: ExtensionContext,
-    ): Promise<AgentToolResult> {
+    ): Promise<AgentToolResult<SendMessageDetails>> {
       const mamoru = opts.getMamoru();
       const db = opts.getDb();
       if (!mamoru || !db) throw new Error("Not connected to a team. Use /team-join first.");

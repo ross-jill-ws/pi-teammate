@@ -3,7 +3,7 @@
  *
  * Wires together MAMORU, tools, commands, and lifecycle hooks.
  */
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import Database from "better-sqlite3";
 import { mkdirSync, existsSync, rmSync } from "node:fs";
 import { initSchema } from "./schema.ts";

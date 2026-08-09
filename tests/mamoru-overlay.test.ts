@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { MamoruOverlay } from "../extensions/tui/mamoru-overlay.ts";
 import type { MamoruEventLog } from "../extensions/mamoru.ts";
 

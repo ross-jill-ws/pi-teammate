@@ -9,8 +9,8 @@
  * When focused, supports vertical scrolling: ↑/↓/j/k, PageUp/PageDown, Home/End.
  * Esc closes the overlay. Ctrl+T then m toggles focus/close.
  */
-import type { Focusable } from "@mariozechner/pi-tui";
-import { matchesKey, visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
+import type { Focusable } from "@earendil-works/pi-tui";
+import { matchesKey, visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 import type { MamoruEventLog } from "../mamoru.ts";
 
 type Theme = {
@@ -189,10 +189,10 @@ export class MamoruOverlay implements Focusable {
       if (this.scrollOffset >= totalRendered - 5) {
         this.userScrolled = false;
       }
-    } else if (matchesKey(data, "pageup")) {
+    } else if (matchesKey(data, "pageUp")) {
       this.scrollOffset = Math.max(0, this.scrollOffset - 10);
       this.userScrolled = true;
-    } else if (matchesKey(data, "pagedown")) {
+    } else if (matchesKey(data, "pageDown")) {
       this.scrollOffset = Math.min(totalRendered, this.scrollOffset + 10);
       if (this.scrollOffset >= totalRendered - 5) {
         this.userScrolled = false;

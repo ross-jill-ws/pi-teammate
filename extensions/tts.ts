@@ -10,7 +10,7 @@
  *   2. `--team-audio on|off` / `/team-audio`    → session override
  *   3. `ELEVENLABS_API_KEY` presence            → default fallback
  */
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type Database from "better-sqlite3";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -405,7 +405,7 @@ export function setupTts(
   // ── /team-audio command ─────────────────────────────────────
   pi.registerCommand("team-audio", {
     description: "Control teammate audio. Usage: /team-audio [on|off]",
-    handler: (args, ctx) => {
+    handler: async (args, ctx) => {
       sessionCtx = ctx;
       refreshVoiceConfig(ctx.cwd);
 

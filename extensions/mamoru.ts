@@ -5,7 +5,7 @@
  * manages agent status and the in-memory roster, and tracks outbound tasks.
  */
 import type Database from "better-sqlite3";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
   MessageRow,
   MessagePayload,
