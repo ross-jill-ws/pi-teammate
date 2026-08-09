@@ -27,7 +27,7 @@ pi remove npm:pi-teammate
 
 Each teammate runs from its own working directory, and every working directory **must contain a `persona.yaml`** file that defines the agent's identity (name, role, system prompt). No other files are required. See [Writing a `persona.yaml`](#writing-a-personayaml) below for the full field reference and examples.
 
-You can clone ready-made examples from [pi-teammate-samples](https://github.com/ross-jill-ws/pi-teammate-samples).
+You can clone ready-made examples from [pi-teammate-samples](https://github.com/ross-jill-ws/pi-teammate-samples), or skip the manual setup entirely and let the bundled `pi-teammate-template` skill generate the folders for you — see [Generating teammates with the bundled skill](#generating-teammates-with-the-bundled-skill).
 
 Set up three directories like this:
 
@@ -211,6 +211,18 @@ systemPrompt: >
 ```
 
 The key to a good persona is a clear **boundary** — tell the agent what it owns and what it should hand off to others. The designer should never write code; the developer should never make design decisions; the tester should never approve without running builds.
+
+### Generating teammates with the bundled skill
+
+Instead of writing each file by hand, run the bundled `pi-teammate-template` skill and describe the team you want:
+
+```
+/skill:pi-teammate-template Generate 3 teammates: Tom (code writer); Jerry (code Reviewer, openai-codex/gpt-5.3-codex-spark); Spike (DevOps, e.g. initialize repo, start/stop servers, check logs etc.)
+```
+
+The skill creates one folder per teammate, each with a complete `persona.yaml`. It writes the hand-off boundaries into every `systemPrompt`, validates each file through the same loader `pi` uses at session start, and prints the launch command for each teammate. Fields you don't specify fall back to `provider: openai-codex`, `model: gpt-5.6-sol`, `thinkingLevel: high` — override them per teammate as with Jerry above. If names, roles, or personalities are missing, it asks first and offers suggestions to pick from.
+
+The skill is model-invoked, so plain language works too — "set up a designer, developer and tester team in this repo" triggers it just as well.
 
 ## Voice (ElevenLabs TTS)
 
